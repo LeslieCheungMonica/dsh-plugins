@@ -1,0 +1,93 @@
+<title>宁波代码升级纪录 · 汇总</title>
+
+<p>读者：宁波升级相关开发与项目同事 ｜ 信息截至：2024-05-11（源表最后一次更新）｜ 汇总日期：2026-09-15</p>
+
+<callout emoji="📌" background-color="light-blue" border-color="blue">
+  <p><b>5 条代码修改记录，全部在 fix_v2.1.2 分支；其中 2 条已合并到 2.1.2 分支、1 条已合并到 master，其余 3 条在源表中仍记为未合并。</b></p>
+  <p>源表自 2024-05-11 后未再更新，下列状态可能已过期，推进前建议先向相关同事核实现状 [待核]。</p>
+</callout>
+
+<h1 seq="auto">总体状态</h1>
+<ul>
+  <li>记录范围：5 条代码修改，涉及 4 个代码库 —— sdc-data-pretreat 出现 2 次，sdc-data-ouput、sdc-cloud-governance、platfrom-web 各 1 次。</li>
+  <li>修改分支：5 条全部为 fix_v2.1.2（源表「修改分支」列 5/5）。</li>
+  <li>是否合并到2.1.2分支：2 条为「是」（sdc-cloud-governance、sdc-data-pretreat 的 5/10 那条），3 条为「否」。</li>
+  <li>是否合并到master：1 条为「是」（sdc-cloud-governance），1 条为「否」，3 条未填。</li>
+</ul>
+
+<h1 seq="auto">修改明细</h1>
+<table>
+  <colgroup><col width="140" /><col width="88" /><col width="240" /><col width="150" /><col width="101" /><col width="101" /></colgroup>
+  <thead>
+    <tr>
+      <th><p>项目名</p></th>
+      <th><p>修改分支</p></th>
+      <th><p>修改功能</p></th>
+      <th><p>提交时间</p></th>
+      <th><p>是否合并到2.1.2分支</p></th>
+      <th><p>是否合并到master</p></th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><p>sdc-data-pretreat</p></td>
+      <td><p>fix_v2.1.2</p></td>
+      <td><p>1. 预处理-转换组件的时间戳类型 从字符串类型改为整形</p></td>
+      <td><p>bugfix liyanhui 2024/4/26, 11:20</p></td>
+      <td><p>否</p></td>
+      <td><p>未填</p></td>
+    </tr>
+    <tr>
+      <td><p>sdc-data-ouput</p></td>
+      <td><p>fix_v2.1.2</p></td>
+      <td><p>1、支持ES 7 HTTPS改动<br/>2、ES7 入库功能模块改动</p></td>
+      <td><p>未填</p></td>
+      <td><p>否</p></td>
+      <td><p>未填</p></td>
+    </tr>
+    <tr>
+      <td><p>sdc-cloud-governance</p></td>
+      <td><p>fix_v2.1.2</p></td>
+      <td><p>ES统计存储量</p></td>
+      <td><p>fixbug ma.hx3 52 minutes ago</p></td>
+      <td><p>是</p></td>
+      <td><p>是</p></td>
+    </tr>
+    <tr>
+      <td><p>platfrom-web</p></td>
+      <td><p>fix_v2.1.2</p></td>
+      <td><p>监控配置增加中间件集群配置</p></td>
+      <td><p>2024/4/18</p></td>
+      <td><p>否</p></td>
+      <td><p>未填</p></td>
+    </tr>
+    <tr>
+      <td><p>sdc-data-pretreat</p></td>
+      <td><p>fix_v2.1.2</p></td>
+      <td><p>1. 预处理-标准日志映射组件 修改bug，配置的字段值为空会报错</p></td>
+      <td><p>2024/5/10</p></td>
+      <td><p>是</p></td>
+      <td><p>否</p></td>
+    </tr>
+  </tbody>
+</table>
+<p>表中「未填」指源表该单元格为空（源表原值为空，此处仅为可读性标注）。源表 G4 另有一条无表头备注：「master是先更新了的，只是212没更新」，对应上表第 3 条 sdc-cloud-governance。</p>
+
+<h1 seq="auto">偏差与风险</h1>
+<ul>
+  <li>两条分支的合并进度不一致：唯一合并到 master 的 sdc-cloud-governance，在源表中反而记为未合并到 2.1.2 分支（源表备注解释为「master 已更新、212 未更新」）；其余 4 条均未合并到 master。建议确认 2.1.2 分支是否需要补合。</li>
+  <li>3 条修改（sdc-data-pretreat 4/26、sdc-data-ouput、platfrom-web）在源表中记为未合并到 2.1.2 分支，而源表已两年多未更新，实际是否已合并、是否仍需合并均未知 [待核]。</li>
+  <li>「提交时间」列口径不统一：2 条为日期（2024/4/18、2024/5/10），1 条为粘贴的提交记录原文，1 条为相对时间「52 minutes ago」（事后无法还原具体日期），1 条为空。</li>
+  <li>源表位于个人知识库、仅表主可见，本汇总的团队读者无法直接打开源表核对；如需比对，建议把源表另存或移动到本目录下 [待核]。</li>
+</ul>
+
+<h1 seq="auto">建议动作</h1>
+<ol>
+  <li>向宁波升级的负责人核实上述 3 条未合并项的当前状态：仍需合并的排期补齐，已不需要的在源表「是否合并到2.1.2分支」列写明原因。</li>
+  <li>确认 2.1.2 分支与 master 的差异是否只差 sdc-cloud-governance 这 1 条，确认后同步更新源表「是否合并到master」列。</li>
+  <li>补齐 sdc-data-ouput 的提交时间，并把相对时间改写为绝对日期，统一该列格式。</li>
+  <li>给源表 G 列补表头（如「备注」），并核对两处项目名是否为笔误：sdc-data-ouput（output？）、platfrom-web（platform？）[待核]。</li>
+</ol>
+
+<h1 seq="auto">数据来源</h1>
+<p>飞书电子表格《宁波代码升级纪录》：个人知识库，子表「宁波代码升级纪录」，有效数据区域 A1:G6（表头 1 行 + 记录 5 行），文档版本 38，创建于 2024-04-28、最后更新 2024-05-11；链接 https://asiainfo-sec.feishu.cn/wiki/QMpFwmdAqi1QvjkAtkWc6ApOnEh （个人知识库文档，仅表主可见）。本汇总按源表原文整理，未修改源表任何内容。</p>
