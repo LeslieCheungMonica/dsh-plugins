@@ -1089,44 +1089,373 @@ const SHELL = `
   color: var(--dsw-alias-label-dimmed);
 }
 
-/* ── git drawer ──────────────────────────────────────────────────────── */
+/* ── action bar ──────────────────────────────────────────────────────── */
 
-/* The header trigger. It matches the shipped session-log capsule in height and
-   weight so the utility row reads as one group rather than as two plugins. */
-[data-wui='gitHeaderButton'] {
+/* One always-on group, pinned under the deploy's account chip.
+
+   The login gate parks that chip at 12px/14px with a 32px capsule (20px avatar
+   plus 5px of padding either side and a 1px border), so its lower edge is at
+   44px and this bar starts at 52px — 8px of air. It is inset a little further
+   from the right edge than the chip is (24px against the chip's 14px) so the
+   controls do not read as part of the chip itself. Both offsets are custom
+   properties, so a deployment whose chip differs can move the bar without
+   touching the rules below. */
+[data-wui='actionBar'] {
+  position: fixed;
+  top: var(--dsh-web-ui-bar-top, 52px);
+  right: var(--dsh-web-ui-bar-right, 24px);
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  /* The overlay layer as a whole is click-through, so a floating group must
+     claim its own hits. */
+  pointer-events: auto;
+}
+
+[data-wui='actionButton'] {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  height: 24px;
-  padding: 0 8px;
+  height: 26px;
+  padding: 0 9px;
   border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 6px;
-  background: transparent;
+  border-radius: 999px;
+  background: var(--dsw-alias-bg-layer-1);
   color: var(--dsw-alias-label-secondary);
   font-size: 12px;
   line-height: 1;
   cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
 }
 
-[data-wui='gitHeaderButton']:hover:not(:disabled) {
+[data-wui='actionButton']:hover:not(:disabled) {
   background: var(--dsw-alias-interactive-bg-hover);
   color: var(--dsw-alias-label-primary);
 }
 
-[data-wui='gitHeaderButton']:disabled {
+[data-wui='actionButton']:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* The open panel's own control reads as pressed — the one state that answers
+   "why is that panel there". */
+[data-wui='actionButton'][aria-pressed='true'] {
+  border-color: var(--dsh-web-ui-accent);
+  background: var(--dsw-alias-interactive-bg-hover-accent);
+  color: var(--dsw-alias-label-primary);
+}
+
+[data-wui='actionButtonLabel'] {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+/* ── bottom command bar ──────────────────────────────────────────────── */
+
+[data-wui='termPanel'] {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 55;
+  display: flex;
+  flex-direction: column;
+  min-height: 120px;
+  border-top: 1px solid var(--dsw-alias-border-l1);
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-primary);
+  box-shadow: 0 -8px 28px rgba(0, 0, 0, 0.14);
+  animation: wui-term-in 160ms ease-out;
+}
+
+@keyframes wui-term-in {
+  from { transform: translateY(18px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+/* The grab strip: a hairline with a hit area tall enough to actually catch. */
+[data-wui='termResize'] {
+  flex: none;
+  height: 6px;
+  margin-top: -3px;
+  cursor: ns-resize;
+}
+
+[data-wui='termResize']:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+[data-wui='termHead'] {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--dsw-alias-border-l1);
+}
+
+[data-wui='termTitle'] {
+  flex: none;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+[data-wui='termDir'] {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 11.5px;
+  color: var(--dsw-alias-label-dimmed);
+}
+
+[data-wui='termSpacer'] {
+  flex: 1;
+  min-width: 0;
+}
+
+[data-wui='termChip'] {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-secondary);
+}
+
+[data-wui='termChip'][data-tone='running'] {
+  background: var(--dsw-alias-state-warn-tertiary);
+  color: var(--dsw-alias-state-warn-label);
+}
+
+[data-wui='termChip'][data-tone='ok'] {
+  background: var(--dsw-alias-state-success-tertiary);
+  color: var(--dsw-alias-state-success-secondary);
+}
+
+[data-wui='termChip'][data-tone='failed'] {
+  background: var(--dsw-alias-state-error-secondary);
+  color: var(--dsw-alias-label-primary-foreground);
+}
+
+[data-wui='termChip'][data-tone='warn'] {
+  background: var(--dsw-alias-state-warn-tertiary);
+  color: var(--dsw-alias-state-warn-label);
+}
+
+[data-wui='termChip'][data-tone='muted'] {
+  color: var(--dsw-alias-label-dimmed);
+}
+
+[data-wui='termButton'] {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11.5px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+[data-wui='termButton']:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover-solid);
+  color: var(--dsw-alias-label-primary);
+}
+
+[data-wui='termButton']:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+[data-wui='termButton'][data-tone='danger']:hover {
+  background: var(--dsw-alias-interactive-bg-hover-danger);
+  color: var(--dsw-alias-state-error-primary);
+}
+
+[data-wui='termHead'] [data-wui='iconButton'] {
+  flex: none;
+  width: 22px;
+  height: 22px;
+}
+
+[data-wui='termRuns'] {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  overflow-x: auto;
+  padding: 4px 12px 0;
+  border-bottom: 1px solid var(--dsw-alias-border-l1);
+}
+
+[data-wui='termRun'] {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 220px;
+  padding: 4px 8px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+[data-wui='termRun']:hover {
+  color: var(--dsw-alias-label-primary);
+}
+
+[data-wui='termRun'][data-active='true'] {
+  border-bottom-color: var(--dsh-web-ui-accent);
+  color: var(--dsw-alias-label-primary);
+  font-weight: 600;
+}
+
+[data-wui='termRunText'] {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+[data-wui='termRunDot'] {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--dsw-alias-border-l3);
+}
+
+[data-wui='termRunDot'][data-tone='running'] { background: var(--dsw-alias-state-warn-primary); }
+[data-wui='termRunDot'][data-tone='ok'] { background: var(--dsw-alias-state-success-primary); }
+[data-wui='termRunDot'][data-tone='failed'] { background: var(--dsw-alias-state-error-primary); }
+
+[data-wui='termPane'] {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  position: relative;
+  padding: 8px 12px;
+  background: var(--dsw-alias-markdown-code-block);
+}
+
+[data-wui='termOut'] {
+  margin: 0;
+  color: var(--dsw-alias-label-secondary);
+  font-family: var(--dsw-font-markdown-code-block-font-family, ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  tab-size: 2;
+}
+
+[data-wui='termNote'] {
+  font-size: 11.5px;
+  color: var(--dsw-alias-label-dimmed);
+}
+
+[data-wui='termError'] {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--dsw-alias-state-error-secondary);
+  color: var(--dsw-alias-label-primary-foreground);
+  font-size: 11.5px;
+}
+
+[data-wui='termJump'] {
+  position: absolute;
+  right: 20px;
+  bottom: 54px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 9px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 999px;
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+[data-wui='termInputRow'] {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 12px;
+  border-top: 1px solid var(--dsw-alias-border-l1);
+}
+
+[data-wui='termPrompt'] {
+  flex: none;
+  color: var(--dsh-web-ui-accent);
+  font-family: var(--dsw-font-markdown-code-block-font-family, ui-monospace, monospace);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+[data-wui='termInput'] {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 6px;
+  background: var(--dsw-alias-bg-base);
+  color: var(--dsw-alias-label-primary);
+  font-family: var(--dsw-font-markdown-code-block-font-family, ui-monospace, monospace);
+  font-size: 12.5px;
+}
+
+[data-wui='termInput']:focus {
+  outline: none;
+  border-color: var(--dsh-web-ui-accent);
+}
+
+[data-wui='termRunButton'] {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  height: 26px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--dsh-web-ui-accent);
+  color: var(--dsh-web-ui-accent-label);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+[data-wui='termRunButton']:hover:not(:disabled) {
+  background: var(--dsh-web-ui-accent-hover);
+}
+
+[data-wui='termRunButton']:disabled {
   opacity: 0.5;
   cursor: default;
 }
 
-[data-wui='gitHeaderButton'][aria-expanded='true'] {
-  background: var(--dsw-alias-interactive-bg-active);
-  color: var(--dsw-alias-label-primary);
-}
-
-[data-wui='gitHeaderLabel'] {
-  font-weight: 600;
-  letter-spacing: 0.02em;
-}
+/* ── git drawer ──────────────────────────────────────────────────────── */
 
 /* A click-through positioning layer: the drawer floats over the app without
    blocking it, and without dismissing on an outside click. */
@@ -1371,6 +1700,20 @@ const SHELL = `
 [data-wui='gitSectionHead'] > span:first-child {
   flex: 1;
   min-width: 0;
+}
+
+/* A section head whose label is a disclosure button rather than a span: the
+   button takes the free space so the section's own action stays at the right
+   edge instead of crowding the label. */
+[data-wui='gitSectionHead'] [data-wui='gitDisclosure'] {
+  flex: 1;
+  min-width: 0;
+}
+
+[data-wui='gitRemoteName'] {
+  flex: none;
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary-bluish);
 }
 
 [data-wui='gitSectionTitle'] {
@@ -1741,6 +2084,13 @@ const SHELL = `
 
 [data-wui='gitNote'][data-tone='error'] {
   color: var(--dsw-alias-state-error-primary);
+}
+
+/* An explanatory note rather than a status: dimmer than a normal note, because
+   it is orientation the reader needs once, not information about the tree. */
+[data-wui='gitNote'][data-tone='hint'] {
+  color: var(--dsw-alias-label-dimmed);
+  font-size: 11px;
 }
 
 [data-wui='gitEmpty'] {

@@ -26,7 +26,7 @@
   "scripts": {
     "build": "tsdown",
     "watch": "tsdown --watch",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.host.json && tsc -p tsconfig.client.json",
     "smoke": "node scripts/smoke.mjs",
     "smoke:new-project": "node scripts/smoke-new-project.mjs",
     "smoke:git": "node scripts/smoke-git.mjs"

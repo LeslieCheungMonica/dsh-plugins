@@ -340,6 +340,22 @@ export interface GitRecordList {
 
 /** Every mutation this panel can perform. */
 export type GitAction =
+  /**
+   * Create a repository in a directory that has none.
+   *
+   * The one action that works BOTH before and after a repository exists, which
+   * is why it is the one action whose directory is not resolved to a work tree
+   * first — see the host's `act`.
+   */
+  | 'init'
+  /** Point a new remote at a URL. */
+  | 'remote-add'
+  /** Change an existing remote's URL. */
+  | 'remote-set-url'
+  /** Rename a remote. */
+  | 'remote-rename'
+  /** Forget a remote. */
+  | 'remote-remove'
   /** Switch HEAD to an existing local branch or commit. */
   | 'checkout'
   /** Create a branch at a start point, optionally switching to it. */
@@ -411,6 +427,8 @@ export interface GitActionArgs {
   readonly ref?: string
   /** A branch name to create or delete. */
   readonly name?: string
+  /** A remote's URL. */
+  readonly url?: string
   /** The current name, for a rename. */
   readonly from?: string
   /** The new name, for a rename. */
@@ -429,9 +447,13 @@ export interface GitActionArgs {
   readonly prune?: boolean
   /** Set the local branch's upstream when pushing. */
   readonly setUpstream?: boolean
-  /** Remote name; the caller's default applies when absent. */
+  /** Remote name; the caller's default (`origin`) applies when absent. */
   readonly remote?: string
-  /** Remote branch name. */
+  /**
+   * A branch name. For `init` it is the INITIAL branch (`git init -b`), which
+   * is the same field because it is the same fact: the branch this action
+   * concerns. For `push`/`pull` it is the remote branch.
+   */
   readonly branch?: string
   /** Paths, repository-relative, for the index and working-tree actions. */
   readonly files?: readonly string[]

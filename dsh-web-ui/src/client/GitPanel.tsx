@@ -433,6 +433,32 @@ export function GitPanel({ dir, t, onClose }: GitPanelProps): ReactNode {
                     ? t('git.gitMissing.hint')
                     : null}
               </span>
+              {/* A directory with no repository is not an error the operator
+                  has to leave the page to fix: the drawer can create the
+                  repository, which is exactly the state a brand-new project is
+                  in. The verb is offered HERE, next to the sentence that names
+                  the directory, so the fix is one click from the diagnosis. */}
+              {overviewError.code === 'not-a-repo' && (
+                <button
+                  type="button"
+                  data-wui="gitPrimaryButton"
+                  disabled={busy}
+                  onClick={() => {
+                    setPrompt({
+                      title: t('git.init.title'),
+                      label: t('git.init.label'),
+                      initialValue: 'main',
+                      onSubmit: (branch) => {
+                        void run('init', branch === '' ? {} : { branch }).then((result) => {
+                          if (result?.ok === true) setStatus({ tone: 'ok', text: t('git.init.done') })
+                        })
+                      },
+                    })
+                  }}
+                >
+                  {t('git.init')}
+                </button>
+              )}
               <button type="button" data-wui="gitQuickButton" onClick={() => { void loadOverview(true) }}>
                 {t('git.retry')}
               </button>

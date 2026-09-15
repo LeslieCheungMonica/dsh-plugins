@@ -61,34 +61,54 @@ directory whose sessions share its path.
 
 ## The git drawer
 
-A **Git** button in the session header's right-aligned utility group opens a
-drawer over the right edge of the page. It is about the **current session's
-project**: the repository is resolved from the workspace that accounts for the
-open session, so switching sessions switches repositories without a picker.
+The frame carries an **action bar**: one always-on group of panel controls,
+pinned under the deploy's account chip at the top-right. It currently carries one
+control.
 
-The drawer floats over the app and is click-through outside its own box: it is a
-side panel, not a modal, so it stays open while you read or type in the session
-behind it. `Esc` or the ✕ closes it.
-
-| Tab | Answers |
+| Control | What it does |
 |---|---|
-| **分支 / Branches** | the current branch as a card (upstream, ahead/behind, tip commit), every local branch with its tracking state, and the remote-tracking roster behind a disclosure |
-| **改动 / Changes** | the commit box, then conflicts / staged / working-tree / untracked buckets, then the stash stack — with an in-place diff per row |
-| **历史 / History** | the last 20–200 commits; opening one reads its patch and per-file line counts on demand |
-| **操作记录 / Journal** | every command this drawer ran, with git's exit status, duration, and combined output |
+| **Git** | opens the drawer below — the branch / changes / history / journal panel for the current session's project |
 
-Branch row menus carry the verbs that apply to that row: switch, merge into the
-current branch, rebase the current branch onto it, rename, delete, push, create a
-tag at it, copy the name. The current branch's own menu correctly omits
-switch/merge/rebase/delete, because none of them apply to it.
+Two further controls were built and are **off**, at the operator's request:
 
-Everything that leaves the working tree changed asks first, in a dialog that
-names the exact branch, path, or stash (`确认删除分支「feature/x」？`). The quick
-row at the top is `Fetch`, `Pull`, `Push` (which adds `--set-upstream` when the
-branch has none), and a **More** menu with `pull --rebase`, `fetch --prune`,
-`push --tags`, `tag`, and *abort* when a merge, rebase, cherry-pick, or revert is
-in progress — the in-progress operation is detected from the git directory and
-announced in a strip above the tabs.
+- a **right-panel** control for the frame's `details` column (the tool-call
+  inspector). Its machinery is gone with it — it was a dozen lines, and the
+  column belongs to `ui-conversation`, which already opens it when a tool call is
+  clicked, so removing the control restored the previous behaviour exactly.
+- a **terminal** control for the bottom command bar. **Its implementation is
+  intact** — see [The bottom command bar](#the-bottom-command-bar) — but nothing
+  imports its component (so it is not in the client bundle at all) and the host
+  registers none of its routes unless the plugin row opts in.
+
+The bar is ONE registration into `shell.overlay`, a root-scope additive
+click-through list seat, and that single-ness is the design:
+
+- **One place, both states.** The bar lives in the frame, not in the session
+  header, so it does not come and go with the header's chrome. A blank session's
+  hero renders the header as `display: none` — the state a brand-new project
+  opens in — and a control that lived in the header would vanish exactly there.
+  The account chip it sits under has the same two homes (fixed in the corner with
+  no session, in the header flow with one) and lands in the same place either
+  way, so "under it" is one position, not two.
+- **No shared state to lose.** With one registration the drawer's open flag is
+  ordinary component state. An earlier two-trigger version needed a hand-rolled
+  observable because the slot core refuses one store handle under two scopes
+  (*"one handle, one scope"*) — the second registration threw, the throw was
+  caught to protect the page, and the header button silently did not exist. One
+  registration removes the whole failure mode.
+- **The bar asks the shell, not itself.** Whether the details column is open is
+  the shell's fact, and the shell also changes it on its own. The bar reads the
+  frame's published `data-details-collapsed` marker rather than tracking a flag
+  that would disagree with the frame within one click and turn the next one into
+  a no-op. It distinguishes *"no shell yet"* (the first render, before the frame
+  is committed) from *"the shell says open"* by the root outlet's own
+  `data-slot="root"` marker — conflating those two was a real bug: the control
+  guessed "open" on the first render and its first click called `closeDetails()`
+  on an already-closed column.
+
+It is about the **current session's project**: the repository is resolved from
+the workspace that accounts for the open session, so switching sessions switches
+repositories without a picker.
 
 ### Host half (`src/host/git.ts`, `src/host/git-routes.ts`)
 
@@ -104,6 +124,18 @@ A browser cannot run `git`, so the drawer only ever asks questions:
 | `GET /dsh-web-ui/git/diff?file=&staged=&ref=` | one path's unified diff (refused with a reason for an untracked path) |
 | `GET /dsh-web-ui/git/records` | this plugin's journal for that repository |
 | `POST /dsh-web-ui/git/action` | one mutation, selected by `action` and parameterised by `args` |
+
+The mutation set is 30 verbs: `init`, `remote-add` / `remote-set-url` /
+`remote-rename` / `remote-remove`, `checkout`, `create-branch`, `rename-branch`,
+`delete-branch`, `merge`, `rebase`, `cherry-pick`, `reset`, `fetch`, `pull`,
+`push`, `push-branch`, `stage`, `unstage`, `discard`, `clean`, `commit`,
+`amend`, `stash-save` / `-pop` / `-apply` / `-drop`, `tag-create`, `tag-delete`,
+`abort`.
+
+`init` is the one action that runs in a directory which is **not** a work tree
+yet — that is the whole point of it — so it is the one action whose directory is
+not resolved to a work tree first. Every other action refuses outside a
+repository with a `not-a-repo` value.
 
 Four rules shape the host half, and each one is load-bearing:
 
@@ -140,6 +172,108 @@ so a reader never sees the tree it just changed.
   or submodule support. A conflict is surfaced as a bucket plus an *abort*
   action; resolving it is the operator's job in an editor.
 - The journal is in memory: restarting `dsh web` clears it.
+
+## The bottom command bar
+
+> **Currently OFF.** The bar has no terminal control, and the host registers none
+> of the routes below, because this plugin's row does not set
+> `terminal.enabled: true`. The implementation is kept whole and still
+> type-checked; enabling it is two edits, described at the end of this section.
+
+The **Terminal** control opens a panel pinned to the bottom of the viewport. It
+is a **command bar, not a terminal emulator**: one command line at a time, no
+pty, no full-screen curses programs, no interactive prompt. That scope is stated
+in the UI rather than implied — the input is a command LINE, and the header shows
+the sandbox mode the commands actually run under.
+
+What it does:
+
+- **Run a command line** in the current session's project, with `bash -lc` (a
+  login shell, so the operator's PATH applies).
+- **Watch its output**, stdout and stderr merged, in the pane. Output follows the
+  tail while the operator is at the tail; scrolling up stops the follow and
+  reveals a *jump to the end* control.
+- **Stop it** — the only way to end a command that has not decided to end.
+- **Keep the last few runs** in a strip: each with its status dot, click to
+  switch. The list survives a page reload, because the host still holds it.
+- **Recall typed lines** with ↑/↓ in the input.
+
+### Sandbox, and why the mode is on screen
+
+The command line is the one input on this plugin's surface that a shell
+evaluates — quoting, pipes and globs are the point of a command bar, and
+pretending otherwise would make it useless. So the consequences are handled
+rather than wished away:
+
+- the argv goes through `ctx.sandbox.confine` with the policy `ctx.sandboxPolicy`
+  resolves, whose workspace boundary is the project directory;
+- by default that is a **sessionless** resolve, which yields the **deployment's
+  configured mode** — deliberately *not* the running session's own override,
+  because a command typed into this bar belongs to no agent session. On this
+  deployment that resolves to `workspace-write`, so commands are confined to the
+  project directory even though the session beside them may run wider;
+- `config.terminal.mode` pins it instead (`read-only` / `workspace-write` /
+  `danger-full-access`), and `danger-full-access` skips confinement entirely;
+- **the mode a run executed under is reported on every run and shown in the
+  panel header.** Confinement the operator cannot see is confinement that turns a
+  write failure into a mystery.
+
+### Host half (`src/host/term.ts`, `src/host/term-routes.ts`)
+
+| Route | Answers |
+|---|---|
+| `POST /dsh-web-ui/term/run` | starts one command; answers with the run's id and state |
+| `GET /dsh-web-ui/term/poll?id=&from=` | everything the run produced after byte offset `from`, plus the offset to send next |
+| `POST /dsh-web-ui/term/kill` | stops one run (safe on a command that already exited) |
+| `GET /dsh-web-ui/term/list` | every run the host still holds, newest first |
+
+**The transport is polling, not SSE** — a deliberate trade. A command's output is
+bursty, a 400 ms poll is indistinguishable from a stream at human scale, and it
+keeps the transport to the same plain request the rest of this plugin uses: no
+long-lived sockets to be buffered by a proxy, capped by a browser, or leaked when
+a panel unmounts. Offsets are **absolute**, so a reader that reloads or falls
+behind asks again from where it was.
+
+Output lives in a bounded per-run ring. `bytes` counts every byte ever produced,
+so an offset stays meaningful after the host drops the front of the buffer: a poll
+whose offset slid out of the window is answered from the window's start and the
+panel prints a gap line there, rather than a silently short log. The window's cut
+is adjusted to a character boundary, so a retained tail never begins mid-codepoint.
+
+### Turning it back on
+
+Two edits, and one of them is a config flag because a disabled feature must not
+leave a live command-execution endpoint registered:
+
+1. **The host.** Add the config block below to this plugin's row in the profile
+   patch. `enabled` is the switch; while it is false (the default) none of the
+   four routes exist, so there is nothing to reach even by hand.
+2. **The client.** In `src/client/ActionBar.tsx`, add a `BarButton` for it beside
+   the Git one (five lines, copied from it) and mount `<TerminalBar>` beside
+   `<GitPanel>`. Nothing else changes: `TerminalBar.tsx`, `termapi.ts`,
+   `src/host/term.ts`, and `src/host/term-routes.ts` all stay compiled and
+   type-checked while the feature is off.
+
+```yaml
+- id: dsh-web-ui
+  name: dsh-web-ui
+  config:
+    terminal:
+      enabled: true       # the switch; false (default) registers no routes
+      mode: auto          # auto | read-only | workspace-write | danger-full-access
+      timeoutMs: 900000   # one command's budget before it is terminated
+      bufferBytes: 262144 # output retained per run (the tail)
+      shell: /bin/bash
+      history: 20         # settled runs the host remembers
+```
+
+Values are validated at boot and a bad one fails loudly with the field named
+(this plugin carries no runtime dependencies, so the check is hand-written rather
+than a schema).
+
+While off, the panel's stylesheet block (~6.8 KB of source CSS) still ships in
+the injected stylesheet — the cost of keeping `TerminalBar.tsx` re-enable-able
+without also restoring its rules.
 
 ## The Feishu document panel
 
@@ -280,8 +414,18 @@ combine the two paths: the row would be inserted twice.
 
 ```sh
 node node_modules/tsdown/dist/run.mjs      # or: npm run build
-node node_modules/typescript/bin/tsc -p tsconfig.json --noEmit   # typecheck
+npm run typecheck                          # or: tsc -p tsconfig.host.json && tsc -p tsconfig.client.json
 ```
+
+**Two type-check units, never one program.** `tsconfig.host.json` and
+`tsconfig.client.json` each cover one half (plus `src/shared/**`, which is
+deliberately inert — types and strings only, so it is safe in both), and
+`tsconfig.json` is a solution file with `files: []` and references to the two.
+The reason is not tidiness: the host and the browser merge the *same* cordis
+`Context` keys (`ctx.sessions`, `ctx.terminal`, …), so a single program sees both
+declarations at once and silently retypes one half with the other's service —
+which is exactly what happened the first time a host type import was added here.
+The harness's own `tsconfig.json` carries the same warning.
 
 `lib/client.js` is the browser half: a classic script that registers a closure
 factory via `window.__ModuleLoader__.load({ id: 'dsh-web-ui', … })`. Its `id`
@@ -381,10 +525,16 @@ back afterwards).
 | The Feishu document panel | `src/client/LarkDocsPanel.tsx` (+ `src/client/larkapi.ts`) |
 | The Feishu read routes | `src/host/routes.ts` (+ the `lark-cli` adapter, `src/host/lark.ts`) |
 | The git drawer | `src/client/GitPanel.tsx` (chrome), `GitBranches.tsx`, `GitChanges.tsx`, `GitHistory.tsx`, `GitRecords.tsx`, `src/client/gitapi.ts` |
-| The git header button | `src/client/GitAction.tsx` (+ its registration in `src/client/index.tsx`) |
+| The action bar (placement, controls) | `src/client/ActionBar.tsx` (+ its one registration in `src/client/index.tsx`) |
+| The command bar (panel, currently unmounted) | `src/client/TerminalBar.tsx` (+ `src/client/termapi.ts`) |
+| The command runner (spawn, sandbox, output window) | `src/host/term.ts`, config in `readTerminalOptions` |
+| The command bar's routes | `src/host/term-routes.ts` (+ the shared HTTP plumbing in `src/host/http.ts`) |
+| Bar offsets, button chrome | `src/client/styles.ts`, `[data-wui='actionBar']` / `[data-wui='actionButton']`; the `--dsh-web-ui-bar-top` / `--dsh-web-ui-bar-right` custom properties |
 | The git write/serve half | `src/host/git.ts` (argv building, parsing, journal), `src/host/git-routes.ts` |
 | The git wire contract (both halves) | `src/shared/gitwire.ts` |
 | Which verbs the drawer offers | `buildAction()` in `src/host/git.ts`, and the per-row menus in `GitBranches.tsx` |
+| Initialize-a-repository empty state | the `gitEmpty` block in `GitPanel.tsx` (the `not-a-repo` arm) |
+| The remotes section | `GitBranches.tsx`, `remoteAddressItems()` + the remotes `<section>` |
 | Which knowledge base opens by default | `PERSONAL_SPACE_ID` in `src/client/larkapi.ts`; the host alias is `PERSONAL_LIBRARY` in `src/host/lark.ts` |
 | Rename / delete dialogs | `src/client/TextPromptDialog.tsx`, `src/client/ConfirmDialog.tsx` |
 | Fallback folder browser | `src/client/BrowseFoldersDialog.tsx` |
@@ -475,12 +625,29 @@ working.
   the shipped browser back, delete the `ctx.slots.inject('sidebar.workspaces', …)`
   block in `src/client/index.tsx` — the shipped registration is still on the
   ledger and renders again immediately.
+- **The command bar is not an interactive terminal.** No pty, no full-screen
+  programs (`vim`, `top`, an interactive REPL), no persistent shell session
+  between commands — each entry is one `bash -lc`. DSH does ship a PTY service
+  (`@deepseek-ai/dsh-terminal` + `dsh-terminal-bash`), but it is line-oriented and
+  **agent-owned** (`spawn(owner: Agent, …)` ties a session's lifetime to an
+  agent), it is not composed in this profile, and the harness has no terminal
+  client UI. An interactive panel is a separate feature, not a config change.
+- **The command bar can execute anything the operator types.** That is what a
+  command bar is for, and it is why the surface is confined by policy, shows the
+  mode it ran under, and is reachable only through the deployment's own login
+  gate. It is also why this plugin never passes a browser's text to a shell
+  anywhere else.
 - **The git drawer needs the host half live.** Everything under `src/client/**`
   is served fresh on a page reload, but `src/host/git.ts` and
   `src/host/git-routes.ts` are imported once per process: adding or changing a
   route needs `dsh web` restarted. Until then the drawer opens and answers *"the
   git routes are not mounted on this host — rebuild the plugin and restart `dsh
   web`"*, which is the honest state rather than an empty branch list.
+- **The drawer manages a repository, it does not create the FOLDER.** *Initialize
+  repository* runs `git init` in the project directory, but nothing here creates
+  the directory itself, clones into it, or edits `.gitignore`. Cloning is the
+  agent's `git_repo` tool (`action: 'clone'`), and the folder is the New Project
+  flow above.
 - **The git drawer cannot resolve conflicts.** Conflicts are surfaced as a
   bucket, with an *abort* action for the operation that produced them; there is
   no merge editor, no interactive rebase, and no submodule support.

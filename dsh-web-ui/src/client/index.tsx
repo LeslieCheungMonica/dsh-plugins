@@ -32,7 +32,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { AsiaInfoMark } from './AsiaInfoMark.tsx'
 import { FallbackBrandControls } from './FallbackBrandControls.tsx'
-import { GitAction } from './GitAction.tsx'
+import { ActionBar } from './ActionBar.tsx'
 import { SessionList } from './SessionList.tsx'
 import { Shell } from './Shell.tsx'
 import { NS, type ShellInjected } from './contract.ts'
@@ -123,23 +123,22 @@ export function apply(ctx: ClientContext): void {
     }
   })
 
-  // The git drawer's trigger: an ADDITIVE entry in the session header's
-  // right-hand utility group, so it needs no takeover of its own — the shipped
-  // session-log control keeps its cell and this one lands beside it. Entries
-  // render by ascending `order` and the shipped entry sits at the default 0, so
-  // `order: 10` makes the git control the rightmost of the two.
-  ctx.slots.inject('conversation.session.header.utilities', () => {
+  // The frame's action bar: ONE registration into a root-scope, additive,
+  // click-through list seat. One place for both states — see ActionBar.tsx for
+  // why it lives here rather than in the session header, why a single
+  // registration is what lets the drawer's open flag stay component state, and
+  // which controls are deliberately not in it.
+  ctx.slots.inject('shell.overlay', () => {
     try {
       return ctx.slots.register({
-        name: 'conversation.session.header.utilities',
-        id: 'dsh-web-ui-git',
-        order: 10,
+        name: 'shell.overlay',
+        id: 'dsh-web-ui-actions',
         locale: NS,
         registrant: 'dsh-web-ui',
-      }, GitAction)
+      }, ActionBar)
     } catch (error) {
-      // A missing utility costs a button, not the page.
-      console.warn('dsh-web-ui: could not register the git header action', error)
+      // The bar is chrome: without it the page is still a working page.
+      console.warn('dsh-web-ui: could not register the action bar', error)
       return () => {}
     }
   })

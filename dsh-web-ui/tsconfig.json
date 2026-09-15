@@ -1,20 +1,20 @@
 {
-  "compilerOptions": {
-    "target": "ES2022",
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "module": "ESNext",
-    "moduleResolution": "bundler",
-    "jsx": "react-jsx",
-    "strict": true,
-    "exactOptionalPropertyTypes": true,
-    "noImplicitOverride": true,
-    "noUncheckedIndexedAccess": true,
-    "verbatimModuleSyntax": true,
-    "isolatedModules": true,
-    "allowImportingTsExtensions": true,
-    "skipLibCheck": true,
-    "noEmit": true,
-    "types": ["node", "react"]
-  },
-  "include": ["src/**/*.ts", "src/**/*.tsx"]
+  "//": [
+    "Solution file: two check units, never one program.",
+    "The host and the browser merge the SAME cordis Context keys (ctx.sessions,",
+    "ctx.terminal, ...), so a single ts.Program sees both declarations at once and",
+    "silently retypes one half with the other's service. `files: []` keeps this",
+    "file program-less for exactly that reason \u2014 the harness's own tsconfig.json",
+    "carries the same warning. Run `npm run typecheck`, which checks both units."
+  ],
+  "extends": "./tsconfig.base.json",
+  "files": [],
+  "references": [
+    {
+      "path": "./tsconfig.host.json"
+    },
+    {
+      "path": "./tsconfig.client.json"
+    }
+  ]
 }

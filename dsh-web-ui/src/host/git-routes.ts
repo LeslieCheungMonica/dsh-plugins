@@ -40,6 +40,7 @@ const MAX_BODY_BYTES = 64 * 1024
 
 /** The actions the route accepts; a name outside this set never reaches a builder. */
 const ACTIONS: ReadonlySet<string> = new Set<GitAction>([
+  'init', 'remote-add', 'remote-set-url', 'remote-rename', 'remote-remove',
   'checkout', 'create-branch', 'rename-branch', 'delete-branch', 'merge', 'rebase',
   'cherry-pick', 'reset', 'fetch', 'pull', 'push', 'push-branch', 'stage', 'unstage',
   'discard', 'clean', 'commit', 'amend', 'stash-save', 'stash-pop', 'stash-apply',

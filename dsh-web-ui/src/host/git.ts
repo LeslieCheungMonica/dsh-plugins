@@ -520,6 +520,25 @@ function parseStashes(raw: string): GitStash[] {
 }
 
 /**
+ * Whether a string is usable as a remote URL.
+ *
+ * A URL travels as ONE argv element, so it can never become a second command —
+ * but git itself gives one URL scheme a way to run one: `ext::` invokes an
+ * arbitrary command as the transport. Whitespace is refused for the same reason
+ * (`ext::sh -c …` needs it, and no real remote URL contains a literal space —
+ * it would be percent-encoded). Everything else is left to git, whose own
+ * rejection is a better error message than a regex written here.
+ * @param url - the candidate.
+ * @returns true when the candidate is worth handing to git.
+ */
+function plausibleRemoteUrl(url: string): boolean {
+  if (url === '' || url.startsWith('-')) return false
+  if (/\s/.test(url)) return false
+  if (/[\u0000-\u001f\u007f]/.test(url)) return false
+  return !url.startsWith('ext::')
+}
+
+/**
  * Confine a repository-relative path so it cannot address another tree.
  *
  * This is a cheap pre-filter, and it is NOT the security boundary: `git add --
@@ -613,11 +632,15 @@ export function createGitService(): GitService {
     })
 
   /**
-   * Resolve a directory to its work-tree root, or answer why it cannot be one.
+   * Check that a path is an absolute directory this host can run git in.
+   *
+   * Split out of {@link resolveRepo} because `init` needs exactly this much and
+   * no more: it is the one action whose directory is not a work tree yet — that
+   * is the whole point of running it.
    * @param dir - the requested directory.
-   * @returns the repository identity, or a failure value.
+   * @returns the directory, or a failure value.
    */
-  const resolveRepo = async (dir: string): Promise<GitResponse<GitRepo>> => {
+  const resolveDirectory = async (dir: string): Promise<GitResponse<string>> => {
     if (dir.trim() === '') return fail('bad-request', 'no directory was given')
     if (!isAbsolute(dir)) return fail('bad-request', `"${dir}" is not an absolute path`)
     let info
@@ -627,6 +650,17 @@ export function createGitService(): GitService {
       return fail('no-directory', `"${dir}" does not exist on the host`)
     }
     if (!info.isDirectory()) return fail('no-directory', `"${dir}" is not a directory`)
+    return pass(dir)
+  }
+
+  /**
+   * Resolve a directory to its work-tree root, or answer why it cannot be one.
+   * @param dir - the requested directory.
+   * @returns the repository identity, or a failure value.
+   */
+  const resolveRepo = async (dir: string): Promise<GitResponse<GitRepo>> => {
+    const checked = await resolveDirectory(dir)
+    if (!checked.ok) return checked
 
     const top = await run(dir, ['rev-parse', '--show-toplevel'], LOCAL_TIMEOUT_MS)
     if (top.missing) return fail('git-missing', 'the `git` CLI is not on the host\'s PATH')
@@ -788,6 +822,16 @@ export function createGitService(): GitService {
       if (ref !== undefined && !plausibleRef(ref)) return fail('bad-request', `"${ref}" is not usable as a revision`)
       const count = Math.min(LOG_LIMIT_MAX, Math.max(1, Math.trunc(limit) || LOG_LIMIT_DEFAULT))
 
+      // A repository with no commit yet has an UNBORN HEAD, and `git log HEAD`
+      // answers that with a fatal error about an ambiguous argument. "No commits
+      // exist" is not a failure — it is an empty history, which is precisely
+      // what a freshly initialized project has — so it is answered as one. An
+      // EXPLICIT ref that does not resolve is still git's error to report.
+      if (ref === undefined) {
+        const head = await run(root, ['rev-parse', '--verify', '--quiet', 'HEAD'], LOCAL_TIMEOUT_MS)
+        if (head.code !== 0) return pass([])
+      }
+
       return cached(root, `log ${String(count)} ${ref ?? 'HEAD'}`, async (): Promise<GitResponse<readonly GitCommit[]>> => {
         const format = ['%H', '%h', '%P', '%an', '%ae', '%aI', '%D', '%s'].join(LOG_FS)
         const result = await run(root, [
@@ -878,8 +922,13 @@ export function createGitService(): GitService {
 
     async records(dir) {
       const repo = await resolveRepo(dir)
-      if (!repo.ok) return repo
-      const all = journal.get(repo.data.root) ?? []
+      // A directory that is not a repository can still have a journal: running
+      // `init` on it is recorded, and losing that record the moment it succeeds
+      // would hide the one command that explains the repository's existence.
+      const all = repo.ok
+        ? (journal.get(repo.data.root) ?? (journal.get(dir) ?? []))
+        : (journal.get(dir) ?? [])
+      if (!repo.ok && all.length === 0) return repo
       const records: GitRecord[] = []
       for (let index = all.length - 1; index >= 0; index -= 1) {
         const record = all[index]
@@ -889,12 +938,26 @@ export function createGitService(): GitService {
     },
 
     async act(request) {
-      const repo = await resolveRepo(request.dir)
-      if (!repo.ok) return repo
-      const root = repo.data.root
+      // `init` is the one action that RUNS in a directory which is not a work
+      // tree yet — requiring one first would make it unusable exactly where it
+      // is needed. It therefore needs only a real directory; every other action
+      // needs a repository, and says so by name when there is none.
+      let root: string
+      let gitDir: string
+      if (request.action === 'init') {
+        const checked = await resolveDirectory(request.dir)
+        if (!checked.ok) return checked
+        root = checked.data
+        gitDir = join(root, '.git')
+      } else {
+        const repo = await resolveRepo(request.dir)
+        if (!repo.ok) return repo
+        root = repo.data.root
+        gitDir = repo.data.gitDir
+      }
       const args = request.args ?? {}
 
-      const built = await buildAction(root, repo.data.gitDir, request.action, args)
+      const built = await buildAction(root, gitDir, request.action, args)
       if (!built.ok) return built
 
       const timeout = REMOTE_ACTIONS.has(request.action) ? REMOTE_TIMEOUT_MS : LOCAL_TIMEOUT_MS
@@ -908,10 +971,29 @@ export function createGitService(): GitService {
       }
       const durationMs = Date.now() - started
       const command = display(built.args)
-      journalise(root, request.action, command, result, durationMs)
+
+      // The journal is keyed by the CANONICAL work-tree root, because that is
+      // what `records` resolves — and the two are not always the same string:
+      // on macOS `/var` is a symlink to `/private/var`, so an `init` keyed by
+      // the path the caller typed would be filed under a key nothing ever reads
+      // back. For `init` the canonical root only exists AFTER the command ran,
+      // which is why it is resolved here rather than above.
+      let key = root
+      if (request.action === 'init' && result.code === 0) {
+        const created = await resolveRepo(root)
+        if (created.ok) key = created.data.root
+      }
+      journalise(key, request.action, command, result, durationMs)
+      if (key !== request.dir) {
+        // The command was asked about a directory that is not (or was not yet) a
+        // work tree: keep it readable under that path too, so the one command
+        // that explains a repository's existence is never the one that is lost.
+        journalise(request.dir, request.action, command, result, durationMs)
+      }
       // A mutation invalidates every read for this repository: the panel must
       // never render the tree it just changed.
-      invalidate(root)
+      invalidate(key)
+      invalidate(request.dir)
 
       if (result.missing) return fail('git-missing', 'the `git` CLI is not on the host\'s PATH')
       const output = tail(
@@ -1013,6 +1095,52 @@ async function buildAction(
   }
 
   switch (action) {
+    case 'init': {
+      // `-b` needs git >= 2.28; older binaries simply get no initial-branch flag
+      // and their own default, which is a better outcome than refusing to init.
+      const argv = ['init']
+      if (args.branch !== undefined && args.branch !== '') {
+        const name = await branchName(args.branch, 'the initial branch name')
+        if (typeof name !== 'string') return name
+        argv.push('-b', name)
+      }
+      return { ok: true, args: argv }
+    }
+    case 'remote-add':
+    case 'remote-set-url':
+    case 'remote-rename':
+    case 'remote-remove': {
+      const name = args.name ?? 'origin'
+      if (name === '' || name.startsWith('-')) {
+        return { ok: false, error: { code: 'bad-request', message: 'a remote name may not start with "-"' } }
+      }
+      if (name === '--') {
+        return { ok: false, error: { code: 'bad-request', message: `"${name}" is not a usable remote name` } }
+      }
+      if (action === 'remote-remove') return { ok: true, args: ['remote', 'remove', name] }
+      if (action === 'remote-rename') {
+        const to = args.to ?? ''
+        if (to === '' || to.startsWith('-')) {
+          return { ok: false, error: { code: 'bad-request', message: 'a remote name may not start with "-"' } }
+        }
+        return { ok: true, args: ['remote', 'rename', name, to] }
+      }
+      const url = args.url ?? ''
+      if (!plausibleRemoteUrl(url)) {
+        return {
+          ok: false,
+          error: {
+            code: 'bad-request',
+            message: url === ''
+              ? 'a remote URL is required'
+              : `"${url}" is not usable as a remote URL`,
+          },
+        }
+      }
+      return action === 'remote-add'
+        ? { ok: true, args: ['remote', 'add', name, url] }
+        : { ok: true, args: ['remote', 'set-url', name, url] }
+    }
     case 'checkout': {
       const ref = await revision(args.ref, 'the branch to switch to')
       if (typeof ref !== 'string') return ref

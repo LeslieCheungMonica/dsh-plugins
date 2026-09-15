@@ -23,7 +23,7 @@ import {
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { MenuEntry } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
-import type { GitBranch, GitBranchList, GitError, GitOverview } from '../shared/gitwire.ts'
+import type { GitBranch, GitBranchList, GitError, GitOverview, GitRemote } from '../shared/gitwire.ts'
 import type { NS } from './contract.ts'
 import { readBranches } from './gitapi.ts'
 import { GitRowMenu, type GitTabProps } from './GitPanel.tsx'
@@ -117,8 +117,9 @@ export function GitBranches({ dir, t, token, run, confirm, prompt, overview }: G
   const [list, setList] = useState<GitBranchList | null>(null)
   const [error, setError] = useState<GitError | null>(null)
   const [loading, setLoading] = useState(true)
-  const [remotesOpen, setRemotesOpen] = useState(false)
+  const [branchesOpen, setBranchesOpen] = useState(false)
   const [menuFor, setMenuFor] = useState<string | null>(null)
+  const [remotesOpen, setRemotesOpen] = useState(true)
   const [now, setNow] = useState(() => Date.now())
   const generation = useRef(0)
 
@@ -148,6 +149,56 @@ export function GitBranches({ dir, t, token, run, confirm, prompt, overview }: G
   const checkout = (branch: GitBranch): void => {
     if (branch.current) return
     void run('checkout', { ref: branch.name })
+  }
+
+  /**
+   * The menu of one REMOTE row (the address), as opposed to one remote-tracking
+   * branch row below it.
+   * @returns the entries.
+   */
+  const remoteAddressItems = (): MenuEntry[] => [
+    { id: 'set-url', label: t('git.remote.edit.title') },
+    { id: 'rename', label: t('git.remote.rename.title') },
+    { id: 'copy', label: t('git.remote.copy') },
+    { id: 'remove', label: t('git.remote.remove') },
+  ]
+
+  /**
+   * Handle one remote row menu selection.
+   * @param remote - the row's remote.
+   * @param id - the selected entry id.
+   */
+  const onRemoteRowSelect = (remote: GitRemote, id: string): void => {
+    if (id === 'set-url') {
+      prompt({
+        title: t('git.remote.edit.title'),
+        label: t('git.remote.url'),
+        initialValue: remote.url,
+        onSubmit: (url) => { void run('remote-set-url', { name: remote.name, url }) },
+      })
+      return
+    }
+    if (id === 'rename') {
+      prompt({
+        title: t('git.remote.rename.title'),
+        label: t('git.remote.rename.name'),
+        initialValue: remote.name,
+        onSubmit: (to) => { void run('remote-rename', { name: remote.name, to }) },
+      })
+      return
+    }
+    if (id === 'copy') {
+      copy(remote.url)
+      return
+    }
+    void (async () => {
+      const yes = await confirm({
+        title: t('git.remote.remove.title'),
+        message: t('git.remote.remove.message', { name: remote.name, url: remote.url }),
+        confirmLabel: t('git.remote.remove'),
+      })
+      if (yes) void run('remote-remove', { name: remote.name })
+    })()
   }
 
   /**
@@ -334,21 +385,86 @@ export function GitBranches({ dir, t, token, run, confirm, prompt, overview }: G
         ))}
       </ul>
 
+      {/* Remotes and remote-tracking branches are two different facts — where a
+          push GOES versus what has been fetched — so they are two sections, and
+          the address is editable right here. A repository with no remote is the
+          normal state of a new project, so the empty section is an invitation
+          rather than a note. */}
+      <section data-wui="gitSection" data-tone="remotes">
+        <div data-wui="gitSectionHead">
+          <button
+            type="button"
+            data-wui="gitDisclosure"
+            aria-expanded={remotesOpen}
+            onClick={() => { setRemotesOpen(open => !open) }}
+          >
+            {remotesOpen ? <IconChevronDownOutline14 size={12} /> : <IconChevronRightOutline14 size={12} />}
+            {t('git.remotes.count', { n: overview.remotes.length })}
+          </button>
+          <button
+            type="button"
+            data-wui="gitTinyAction"
+            onClick={() => {
+              prompt({
+                title: t('git.remote.add.title'),
+                label: t('git.remote.url'),
+                initialValue: '',
+                second: { label: t('git.remote.add.name'), initialValue: 'origin' },
+                onSubmit: (url, name) => { void run('remote-add', { name: name === '' ? 'origin' : name, url }) },
+              })
+            }}
+          >
+            <IconPlusOutline16 size={12} />
+            {t('git.remote.add')}
+          </button>
+        </div>
+        {remotesOpen && overview.remotes.length === 0 && (
+          <>
+            <div data-wui="gitNote">{t('git.remote.none')}</div>
+            <div data-wui="gitNote" data-tone="hint">{t('git.remote.auth.hint')}</div>
+          </>
+        )}
+        {remotesOpen && overview.remotes.length > 0 && (
+          <>
+            <ul data-wui="gitRows" aria-label={t('git.remote.title')}>
+              {overview.remotes.map(remote => (
+                <li key={remote.name} data-wui="gitRow">
+                  <span data-wui="gitRowMain" data-static="true" title={remote.url}>
+                    <span data-wui="gitRowTitle">
+                      <span data-wui="gitRemoteName">{remote.name}</span>
+                      <span data-wui="gitRowName" data-muted="true">{remote.url}</span>
+                    </span>
+                  </span>
+                  <GitRowMenu
+                    label={t('git.branch.actions', { name: remote.name })}
+                    items={remoteAddressItems()}
+                    onSelect={(id) => { onRemoteRowSelect(remote, id) }}
+                    open={menuFor === `remote:${remote.name}`}
+                    setOpen={(open) => { setMenuFor(open ? `remote:${remote.name}` : null) }}
+                    t={t}
+                  />
+                </li>
+              ))}
+            </ul>
+            <div data-wui="gitNote" data-tone="hint">{t('git.remote.auth.hint')}</div>
+          </>
+        )}
+      </section>
+
       <div data-wui="gitSectionHead">
         <button
           type="button"
           data-wui="gitDisclosure"
-          aria-expanded={remotesOpen}
-          onClick={() => { setRemotesOpen(open => !open) }}
+          aria-expanded={branchesOpen}
+          onClick={() => { setBranchesOpen(open => !open) }}
         >
-          {remotesOpen ? <IconChevronDownOutline14 size={12} /> : <IconChevronRightOutline14 size={12} />}
+          {branchesOpen ? <IconChevronDownOutline14 size={12} /> : <IconChevronRightOutline14 size={12} />}
           {t('git.remote.count', { n: list.remote.length })}
         </button>
       </div>
 
-      {remotesOpen && (
+      {branchesOpen && (
         <>
-          {overview.remotes.length === 0 && <div data-wui="gitNote">{t('git.remote.none')}</div>}
           {list.remote.length === 0 && overview.remotes.length > 0 && (
             <div data-wui="gitNote">{t('git.remote.empty')}</div>
           )}
