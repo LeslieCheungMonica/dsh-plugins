@@ -1,0 +1,21 @@
+{
+  "name": "dsh-hello",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Minimal DeepSeek Harness plugin: one model-callable `hello` tool.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

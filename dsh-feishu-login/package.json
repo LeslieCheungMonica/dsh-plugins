@@ -1,0 +1,41 @@
+{
+  "name": "dsh-feishu-login",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DeepSeek Harness web plugin: a Feishu (Lark) QR-code login page in front of the GUI — scan with mobile Feishu to get in.",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "dsh": {
+    "client": {
+      "platform": "web"
+    },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "build": "tsdown",
+    "watch": "tsdown --watch",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "smoke": "node scripts/smoke.mjs",
+    "smoke:browser": "node scripts/smoke-browser.mjs",
+    "verify": "node scripts/verify-armed.mjs --browser",
+    "preview": "node scripts/preview-login.mjs",
+    "probeApp": "node scripts/probe-app.mjs",
+    "probeRedirect": "node scripts/probe-redirect.mjs"
+  },
+  "devDependencies": {
+    "tsdown": "^0.22.2",
+    "typescript": "^5.6.0"
+  }
+}

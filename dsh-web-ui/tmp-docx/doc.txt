@@ -1,0 +1,318 @@
+应用资源接入指南
+1. 概述
+本文档为第三方应用提供接入IAM的方法和步骤指南，内容包括：
+应用接入：
+应用新增
+应用数据同步
+应用单点登录
+亚信票据单点登录
+标签模式单点登录
+表单模式单点登录
+cs应用单点登录
+应用金库接入
+IAM审批页面接入
+自定义审批页面接入
+2. 数据流向
+
+3. 端口开通
+对端应用到IAM前端nginx的网络（双向）4A侧:10.175.104.150 端口9080
+IAM堡垒（4A侧10.218.110.2-177）到对端应用的网络
+涉及应用从账号推送时：m3到对端应用的网络（双向，6.0.9之后）；app到对端应用的网络（双向，6.0.9之前） 
+
+4. 应用接入
+4.1 新增应用
+配置项说明：
+应用名称：自定义（不可重复）
+应用图标：自定义
+应用编码：自定义（不可重复）
+依赖应用：可选选择已接入应用作为依赖应用，共享依赖应用的组织及帐号信息
+复用主帐号密码：复用授权主帐号密码(主帐号修改密码后也会同步修改绑定从帐号的密码)
+登录帐号：
+-主帐号，复用IAM主帐号登录应用系统（当接入应用的组织、帐号数据和IAM主账号一致时 选择次选项）
+-从帐号，使用应用侧帐号登录应用系统（当接入应用有独立的组织、帐号数据时 选择此选项）
+应用类别：
+-BS应用，标识应用类型为BS架构，支持票据，标签，代填
+-CS应用，标识应用为CS架构，仅支持代填
+单点协议：当标识BS应用时，可选单点登录协议
+-亚信票据，系亚信自研的单点登录协议，接入应用需要配合改造对接
+-标签模式，通过识别登录窗口标签代填帐号，密码进行登录 ，仅支持登录帐号为从帐号
+-表单模式，通过表单提交帐号，密码进行登录 ，仅支持登录帐号为从帐号
+应用网关：
+应用网关使用场景:使用票据/标签/表单模式进行单点登录;对应用访问进行加密，由http协议转为https协议;应用访问日志完整记录;应用页面增加安全水印;
+登录工具：
+支持当前浏览器（登录IAM时使用的浏览器）
+支持本地工具（用户电脑上安装的工具）
+支持远程工具（通过图形网关打开远程工具）
+以上三中登录工具，除“当前浏览器”外，其余均需要在访问网关-运维网关-工具管理提前进行配置。
+管理模式：
+-托管，应用从帐号及密码通过通过在IAM进行管理，并将帐号信息同步至第三方应用系统
+-自管，应用从帐号及密码可由用户在登录页录入或管理员从应用管理进行帐号管理，不与应用侧同步（自管应用场景常用于应用本身没有帐号体系，从而复用IAM的帐号作为自身帐号使用,单点也是使用IAM帐号进行登录）
+匹配方式：
+自动匹配 :手机号、邮箱 ，从帐号在反向同步过程或从帐号导入的过程中，根据选择项自动匹配符合的主帐号进行主从授权。
+应用资源组：IAM测应用资源归属组
+应用管理员：可编辑该应用的主账号
+从帐号管理员：从帐号的中的管理员帐号（相当于第三方应用中的超级管理员）
+是否涉敏：涉敏资源无法授权给非涉敏用户；
+密码策略：应用下从帐号可使用的密码策略
+应用同步方式：在应用列表点击“同步”按钮时，会使用以下方式全量拉取第三方应用的组织、从帐号数据。
+-标准API：IAM调用第三方应用提供API（基于4A产品对外标准接口 4.1.4、4.1.12章节的报文结构）全量同步数据
+-数据源：IAM通过数据源配置的sql，全量同步对应数据源中的全量数据。
+应用推送：在IAM应用中对组织、从帐号进行的变更数据会推送给第三方应用系统，操作包括新增、修改、删除/批量新增、批量修改、批量删除 组织机构或从帐号。
+-标准API ：第三方基于4A产品对外标准接口4.1章节定义的报文结构，提供的api接口地址
+登出地址配置：
+-标准API
+-AIF集成（MQ）
+应用侧组织跟节点：填写应用侧组织机构根节点id，多个以","逗号分隔
+访问信息：
+-亚信票据模式：访问信息配置应用侧单点登录地址即可
+-标签模式：以demo应用为例
+访问地址：应用的登录页面地址
+用户名标识：应用登录页面用户名输入框的前端标识
+密码标识：应用登录页面密码输入框的前端标识
+登录标签标识：应用登录页面登录按钮的前端标识
+是否要登录：标签模式代填完成帐号密码后是否要自动触发登录
+
+demo资源登录页信息：
+
+-表单模式：以demo应用为例
+登录接口地址：应用侧登录信息表单的提交地址（非登陆页面地址）
+表单登录代码：应用form表单登录前端代码
+
+| HTML<form method="post"name="login"action="${url}">         <input id="username" name="username" type="text" value="${j_username}"/>         <input name="password" name="password" type="password" value="${j_password}"/>         <input name="Submit" type="submit" value="登录"/> </form> |
+
+登录帐号元素：对应form表单中的用户名动态参数${j_username}
+登录密码元素：对应form表单中的密码动态参数${j_password}
+
+4.2 应用数据同步
+为保证IAM组织、帐号 和 接入应用的数据的一致性，IAM提供正向（IAM应用数据推送至接入应用）、反向（第三方应用推送数据至IAM）的数据同步能力。
+4.2.1 初始化同步
+初始化同步指的是在IAM中新增应用后，在应用列表点击“同步”按钮时，根据应用配置中的应用同步方式项，全量拉取第三方应用的组织、从帐号数据。拉取方式可选两种：
+
+标准API：IAM调用第三方应用提供API全量同步数据
+在应用同步方式项中，选择“标准API”方式，并填写“应用组织采集服务地址”和“从帐号采集服务地址”（第三方应用基于4A产品对外标准接口 4.1.4、4.1.12章节的报文结构提供的API接口地址）
+
+数据源：IAM通过数据源配置的sql，全量同步对应数据源中的全量数据。
+当应用同步方式选择数据源同步时，需要点击应用数据右侧“...”按钮，点击'数据源配置'按钮进行数据源配置，如下图：
+
+|  |  |
+
+服务器连接：
+数据源名称:自定义
+业务类型:从帐号、组织机构  （完整的数据源方式同步，需要从帐号、组织机构两种配置都需要）
+数据库类型：目前支持的数据库类型
+链接地址：数据库链接的URL（例如：jdbc:postgresql://10.21.171.216:54321/postgres）
+链接帐号：数据库登录帐号
+链接密码：数据库登录密码
+SQL语句：获取同步数据的sql查询语句
+表名称：获取从帐号或组织机构对应的表明
+是否选用分页查询：同步操作获取数据是否采用分页方式获取数据（默认分页）
+分页记录数量：没穿分页查询数据条数（默认：100）
+字段匹配规则：
+服务器连接配置完成后，需要配置字段匹配规则，否则点击保存时会报错，切换到字段匹配规则tab页后，左侧显示IAM系统对应从账号/组织机构表的字段，右侧为数据源识别到的表字段，根据需要进行配置后即可保存。
+4.2.2 正向同步（优先）
+正向同步指的是在IAM应用管理中，对应用的组织机构、从帐号操作，会将数据同步至接入的应用，操作包括：新增、修改、删除/批量新增、批量修改、批量删除等。第三方应用提供接口，IAM为调用方。
+应用配置中：
+登录帐号选项：选择“从帐号”
+应用类别： 选择“BS应用”
+管理模式：选择“托管”
+应用推送：开关打开，并配置组织机构新增地址、组织机构修改地址、组织机构删除地址、从帐号新增地址、从帐号修改地址、从帐号删除地址。以上地址为第三方应用基于4A产品对外标准接口4.1章节定义的报文结构，提供的api接口。（注意：当选择“单”时，会以4.1章节中单个同步接口报文结构同步，当选择“多”时，会以4.1章节中相关批量接口报文结构同步）
+
+4.2.3 反向同步
+反向同步指的是在第三方应用中，对应用的组织机构、从帐号操作，会将数据同步至IAM应用，操作包括：新增、修改、删除/批量新增、批量修改、批量删除等。IAM提供接口，调用方为第三方应用。
+第三方应用可参考4A产品对外标准接口 4.2章节中 IAM提供的对外接口，进行调用。
+
+5. 应用单点登录
+5.1 BS应用单点登录
+BS应用单点协议支持：票据模式、表单模式、标签模式。
+5.1.1 亚信票据
+5.1.1.1 IAM应用资源登录页发起登录（优先）
+应用接入选择票据模式，在单点登录应用时，申请票据后调用应用侧票据登录接口，应用侧接收到票据后再调用IAM侧票据验证接口，验证通过后票据登录应用成功。
+时序图：
+
+应用登录
+登录应用的url，根据申请票据返回的数据data，前端发起请求应用票据登录的接口。
+例如：http://10.28.148.112:8998/sso/bill?ticket=1648e7b421624055cc264fc0e726d4acd0787c7b0059912b822a0b20e5a7e81d28106d8091b39786293f6f6d692cdd0aa5dd9b26b2dea6be0e5cf17a067922279e8a920831a905a6a58c05364a46bccd
+验证票据
+应用接收到票据后需要调用票据验证接口，验证通过后资源登录成功。
+票据验证接口规范参考4A产品对外标准接口 2.2章节
+5.1.1.2 亚信票据重定向（漫游登录）
+从其他资源或页面发起对目标资源的票据单点登录。
+时序图：
+
+登录URL
+发起登录后首先跳转至IAM登录页，根据携带的参数完成对目标资源单点登录票据的申请。
+例如：http://10.28.148.112:7032/login/v1/#/login?fromAppCode=AISIAM&toAppCode=llp_api1&redirect_uri=http%3A%2F%2F10.28.148.112%3A8998%2Fsso%2Fbill
+
+| 参数 | 含义 | 备注 |
+| fromAppCode | 发起登陆的资源 | 目前固定为AISIAM |
+| toAppCode | 登录目标资源的appCode | 目标资源的应用编码 |
+| redirect_uri | 登录目标资源对应的访问地址 | 与资源接入访问信息中配置的保持一致 |
+|  |  |  |
+
+注意事项：
+跳转至IAM登录页后，如果IAM处于未登录状态，需要使用IAM主帐号登录，如果IAM处于登录状态则跳过登录步骤；
+如果登录IAM的用户与目标资源有多个主从授权从帐号，会出现从帐号选择界面，需要选择一个从帐号登录资源，如果只又一个主从授权，则自动使用授权帐号登录资源，跳过选择从帐号步骤；
+应用登录
+登录应用的url，根据申请票据返回的数据，请求应用登录的接口。
+例如：http://10.28.148.112:8998/sso/bill?ticket=1648e7b421624055cc264fc0e726d4acd0787c7b0059912b822a0b20e5a7e81d28106d8091b39786293f6f6d692cdd0aa5dd9b26b2dea6be0e5cf17a067922279e8a920831a905a6a58c05364a46bccd
+验证票据
+参考4A产品对外标准接口 2.2章节
+5.1.1.3 API接口方式单点
+API接口方式单点需要根据提供的接口完成票据的申请和验证过程。
+这种单点方式常用于不依赖于IAM应用登录页面由应用自身或第三方完成票据单点登录的过程。
+时序图：
+
+申请票据
+参考4A产品对外标准接口 2.1章节
+验证票据
+参考4A产品对外标准接口 2.2章节
+
+5.1.2 标签模式
+资源配置
+以demo应用为例
+访问地址：应用的登录页面地址
+用户名标识：应用登录页面用户名输入框的前端标识
+密码标识：应用登录页面密码输入框的前端标识
+登录标签标识：应用登录页面登录按钮的前端标识
+是否要登录：标签模式代填完成帐号密码后是否要自动触发登录
+
+demo资源登录页信息：
+
+标签登录
+根据申请登录信息接口返回的data，浏览器调用本地单点客户端，客户端打开本地或远程登录工具，完成资源的帐号密码代填以及登录过程。
+实例：
+
+5.1.3 表单模式
+资源配置
+     以demo应用为例IAM应用资源新增
+登录接口地址：应用侧登录信息表单的提交地址（非登陆页面地址）
+表单登录代码：应用form表单登录前端代码
+
+| HTML<form method="post"name="login"action="${url}">         <input id="username" name="username" type="text" value="${j_username}"/>         <input name="password" name="password" type="password" value="${j_password}"/>         <input name="Submit" type="submit" value="登录"/> </form> |
+
+登录帐号元素：对应form表单中的用户名动态参数${j_username}
+登录密码元素：对应form表单中的密码动态参数${j_password}
+
+表单登录
+当前浏览器
+如果登录工具为当前浏览器时,根据接口返回数据会请求IAM前端登录页面完成form代填登录过程;
+IAM前端登录页面:
+10.28.148.117:7035/appResource/v1/ssologin.html?appId=1742094341327130626&browser=1&dataStamp=1704185405381&subAcctId=1742094394582208515&subAcctNo=admin
+示例:
+
+本地或远程浏览器
+根据申请登录信息接口返回的data，浏览器调用本地单点客户端，客户端打开登录工具，完成资源的帐号密码表单登录过程。
+示例:
+
+5.2 CS应用单点登录
+CS应用单点登录默认CS代填，所以不需要选择单点协议，除单点协议外与BS应用配置参数一致。
+
+6. 应用单点登出
+BS模式、从帐号模式时  可以配置单点等出地址。该配置可以使应用登录会话与IAM侧会话保持一致,避免IAM停用从帐号后或者登出情况下,应用还在登录状态,从而可以避免忘记登出应用后第三人违规操作情况。
+
+接口格式参考4A产品对外标准接口4.1.15章节
+触发登出动作场景：
+主帐号管理，一键封停主帐号时，封停授权的从帐号，同步退出应用系统
+从帐号管理，一键封停从帐号，同步退出应用系统
+7. 应用金库接入
+该流程涉及接口参考4A产品对外标准接口 5金库中心 章节对应接口
+7.1 IAM金库审批页面接入
+直接使用IAM的金库申请审批页面，不需要关心金库申请审批流程的实现，只需要根据接口文档传参即可完成应用操作类金库申请。
+参考4A产品对外标准接口 5.9金库申请审批页面接口申请 章节
+
+7.1.1 接入流程
+
+流程重要步骤说明：
+应用前端再操作时，推荐使用统一拦截器，拦截全都操作请求，根据请求操作码，调用接金库接口进行是否金库触发判断；
+调用金库/ais/configure/web/gold/trigger/app金库进行是否需要触发金库申请的判断，需要触发金库时再嵌入方式发开金库申请页面，接口参数参考4A产品对外标准接口 5.1应用资源操作类金库触发 ；
+应用前端根据返回结果判断是否需要金库金库触发判断，当返回参数rsp=0时表示需要触发金库，此时再打金库申请界面
+rep=0时，需要进一步进行金库申请审批操作，嵌入金库的金库页面地址后需要追加相应的参数，例如完整的路径为：http://ip:port/vault/v1/approve.html?operCode=qwe&mainLoginName=zhangss&subLoginName=admin&appCode=testApp&operContent=%E8%BF%99%E6%98%AF%E4%B8%80%E4%B8%AA%E9%87%91%E5%BA%93%E6%93%8D%E4%BD%9C&resKind=1&tenantId=1
+参数说明：
+
+| 参数 | 参数说明 | 备注 |
+| operCode | 敏感操作编码 |  |
+| mainLoginName | 登录资源主帐号登录名 | IAM侧登录帐号 |
+| subLoginName | 登录资源从帐号登录名 | 资源侧登录帐号 |
+| appCode | 资源编码 | 资源接入IAM约定的资源编码 |
+| operContent | 敏感操作描述 | 避免乱码使用URLDecoder编码 |
+| resKind | 资源类型 | 应用资源固定为‘1’ |
+| tenantId | IAM侧租户ID |  |
+
+审批结果会返回上层调用页面回调函数，审批结果格式：1(审批结果)#1234(流水号)#11234(token,可为空)，当审批结果为1时，表示审批通过，应用侧可以继续进行业务操作，其他审批结果编码参考接口文档；
+当审批结果为1时，如果应用侧需要进一步确认审批结果是否正确，可以获取审批结果中的token参数，对审批结果进行二次验证；
+审批结果二次验证接口为/gold/open/approval/check/token，根据二次验证接口返回结果判断是否继续进行操作，接口参数参考4A产品对外标准接口 5.8金库审批二次验证接口 ；
+
+其中，时序图从第6步开始的第二个流程为可选流程，在应用前端接收到金库审批结果时，为防止金库绕行，可以通过第二个流程，即应用侧后端服务调用金库审批二次验证服务接口（/gold/open/approval/check/token）进行金库审批结果再验证。
+
+金库服务开启token二次认证业务时，NACOS中需要增加以下配置：
+
+| Properties#需要金库审批二次验证的应用的应用编码，多个应用编码以英文逗号（,）分隔，默认为空NEED_GOLDBANK_TOKEN_APPCODE= |
+
+7.1.2 接入方式 
+--postMessage 推荐使用（支持绝大部分浏览器，不支持IE8及以下的低版本IE浏览器）
+Ifram方式：
+
+| JavaScript// 地址var jspURL = "http://10.28.149.181:9037/vault/v1/approve.html?mainLoginName=sll1&operContent=sll1%E7%99%BB%E5%BD%95%E8%A7%A6%E5%8F%91%E9%87%91%E5%BA%93&resEntityId=1&appCode=AISIAM&isBasedOnLogin=true&resKind=1&userIp=&goldSessionId=1739536640268804097&approvalPageUrl=http%3A%2F%2F10.28.149.181%3A9037%2Fvault%2Fv1%2Fapprove.html&tenantId=1";// 打开窗口，弹出金库var myVaultWindow = layer.open({    type: 1 //Page 层类型    ,area: ['600px', '600px']    ,title: 'Hello layer'    ,shade: 0.6 //遮罩透明度    ,maxmin: true //允许全屏最小化    ,anim: 0 //0-6的动画形式，-1不开启    ,content: '<iframe src="'+jspURL+'" name="iframe1" id="iframe1" scrolling="auto" frameborder="0" height="100%" width="100%"></iframe>'});// 接受金库审批返回值window.addEventListener('message', function(e){    var approvalToken=e.data;    debugger;    if(approvalToken != null){        //解析金库审批结果        var returnValues = approvalToken.split("#");        if(returnValues[0] == -3 || returnValues[0] == -2 || returnValues[0] == 1 || returnValues[0] == 2 || returnValues[0] == 5){            layer.close(myVaultWindow);                                    //继续执行金库审批成功后的业务逻辑，如果应用与金库双方约定启用审批结果二次认证后，应用前端取returnValues[2]值，获取token信息，将token信息传到busnessfunction()方法中，传给应用后端服务            //busnessfunction();                    }else{            layer.close(myVaultWindow);        }    }}, false); |
+
+非Ifram方式:
+
+| JavaScript//打开审批窗口：setTimeout(function () {    // returnBack为应用页面的回调函数，    ShowVaultExtralDialog(returnBack, 'http://ip:port/vault/v1/approve.html', {        operCode: res.data.operCode,//操作编码        operContent: res.data.operContent,//操作内容        mainLoginName: res.data.mainLoginName,//主帐号登录名        subLoginName: res.data.subLoginName,//从帐号登录名        appCode: res.data.appCode,//资源编码        tenantId: 1//IAM租户ID    })}, 1)//回调函数参考function returnBack(returnValue) {    alert(returnValue);    var arr = returnValue.split("#");    var result = arr[0];    var token = arr[2];    //token二次校验为可选项，为空时不能进行二次校验    if(token == undefined || token == ""){        // -3 ——金库应急开启中，允许业务继续访问        // -2 ——金库场景或元业务未开启，允许业务继续访问        // -1 ——直接关闭窗口，未申请审批，不允许业务继续访问        // 1 ——审批通过，允许业务继续访问        // 0 ——审批不通过，不允许业务继续访问        // 2 ——超时，允许业务继续访问        // 3 ——超时，不允许业务继续访问        // 4 ——出现错误或异常（包括数据异常），不允许业务继续访问        // 5 ——未配置策略，允许业务继续访问        // 6 ——未配置策略，不允许继续访问        if ('-3' === result){            alert("金库应急开启中，允许业务继续访问");        }else if('-2' === result){            alert("金库场景或元业务未开启，允许业务继续访问");        }else if('-1' === result){            alert("直接关闭窗口，未申请审批，不允许业务继续访问");        }else if('0' === result){            alert("审批不通过，不允许业务继续访问");        }else if('1' === result){            alert("审批通过，允许业务继续访问");        }else if('2' === result){            alert("超时，允许业务继续访问");        }else if('3' === result){            alert("超时，不允许业务继续访问");        }else if('4' === result){            alert("出现错误或异常（包括数据异常），不允许业务继续访问");        }else if('5' === result){            alert("未配置策略，允许业务继续访问");        }else if('6' === result){            alert("未配置策略，不允许继续访问");        }    }else{        //金库审批结果二次验证操作，可选步骤，不是必须            }}//审批窗口蒙版：//创建蒙版window.onload = function () {    if (document.getElementById("vaultWhiteBg")) { return false }    var bg = document.createElement("div");    bg.id = "vaultWhiteBg";    bg.style.height = "100%";    bg.style.width = "100%";    bg.style.position = "fixed";    bg.style.left = "0";    bg.style.top = "0";    bg.style.zIndex = "999";    bg.style.background = "rgba(250,250,250,0.8)";    bg.style.display = 'none';    document.body.appendChild(bg);}var targetVaultWin;var closeVaultTimer;var funcNameVault;function ShowVaultExtralDialog(func, winURL,applyData ) {    funcNameVault = func;    document.getElementById('vaultWhiteBg').style.display = 'block';    //再打开小弹窗    winURL += "?operCode=" + applyData.operCode + "&mainLoginName=" + applyData.mainLoginName+ "&subLoginName=" + applyData.subLoginName + "&appCode="+applyData.appCode+"&operContent=" + applyData.operContent +  "&resKind=1&tenantId=" + applyData.tenantId;    targetVaultWin = window.open(winURL, "newwindow", "height=800, width=700, top=100,left=300");    window.console.log(winURL);    closeVaultTimer = window.setInterval(function () {        if (targetVaultWin != null && targetVaultWin.closed == true) {            //关闭蒙版和计时器            document.getElementById('vaultWhiteBg').style.display = 'none';            window.clearInterval(closeVaultTimer);        }    }, 500);    //监听小窗户返回信息    if (window.addEventListener) {        window.addEventListener('message', ReceiveVaultMsg, false);    } else {        window.attachEvent('message', ReceiveVaultMsg);    }}function ReceiveVaultMsg(e) {    //alert(e);    if (e.data.type === 'inside') {        targetVaultWin.postMessage({ type: 'external', data: obj }, '*');        returnValue = e.data;        //如果审批通过        if (returnValue != 'undefined' && returnValue != '') {            try {                eval(funcNameVault)();            } catch (e) {                try {                    funcNameVault;                } catch (e) {                    funcNameVault();                }            }        }    }    if (targetVaultWin != null) {        returnValue = e.data        //关闭窗户和蒙版        targetVaultWin.close();        document.getElementById('vaultWhiteBg').style.display = 'none';        targetVaultWin = null;        try {            console.log(eval(funcNameVault));            eval(funcNameVault)(returnValue);        } catch (e) {            try {                funcNameVault;            } catch (e) {                funcNameVault();            }        }    }    window.clearInterval(closeVaultTimer);} |
+
+7.2 自定义金库审批页面接入
+接入应用可以自定义审批页面，通过API接口的方式对接IAM金库。
+流程图：
+
+流程说明
+用户进入应用资源进行敏感操作时，调用金库服务提供的应用操作类触发判断接口（/ais/configure/web/gold/trigger/app），判断是否触发金库审批，如果不需要触发金库，则业务继续；
+判断金库触发判断接口返回的rsp和policyFlag字段，根据接口中的描述，判断金库审批是否在有效期或其他放行情况，如果是，则应用继续业务处理；
+如果需要继续金库审批，查询金库申请原因列表（atom/amc/gold/reason/queryUserAvailable），此接口为选填，页面上支持下拉选择和手动输入两种方式，也可以不调用此接口，只支持一种手动输入方式；
+应用侧根据判断接口返回的参数，弹出金库申请创建页面，输入金库申请信息，调用金库侧的金库申请接口（/gold/open/approval/apply），创建金库申请；
+金库申请创建成功后，应用侧弹出金库认证页面，输入认证方式对应的审批信息，调用金库侧对应的认证接口；
+金库认证成功后，会返回认证成功结果，应用侧业务继续；如果金库认证失败，则返回认证失败的结果，应用侧提示用户；
+短信口令失效后，可重新调用短信口令重发接口(/gold/open/approval/smskey/resend)重新发送；
+短信网关认证审批时，当应用侧则在金库申请创建成功后，自行轮询状态查询接口(/gold/open/approval/status/query)，查询审批结果。
+
+7.2.1 功能时序图
+根据金库申请时选择的审批方式不同，流程存在差异，根据实际情况确认流程。
+7.2.1.1 现场审批流程
+
+7.2.1.2 短信密钥审批流程
+
+7.2.1.3 短信网关审批流程
+
+7.2.1.4 回复网关+短信审批流程
+
+7.2.1.5 工单审批流程
+
+流程重要步骤说明：
+应用前端再操作时，推荐使用统一拦截器，拦截全都操作请求，根据请求操作码，调用接金库接口进行是否金库触发判断；
+调用金库/ais/configure/web/gold/trigger/app金库进行是否需要触发金库申请的判断，需要触发金库时再打开自定义金库申请页面，rsp=0、policyFlag=0时需要触发金库,接口参数参考4A产品对外标准接口 5.1应用资源操作类金库触发 ；
+如果需要金库申请，/ais/configure/web/gold/trigger/app接口会返回金库页面所需要的参数，金库页面渲染时需要，所需参数有：
+
+| JSON//审批人信息，对应接口返回参数如下"apMainAcctList": [    {        "mainAcctId": "10000",        "loginName": "test1",        "name": "测试1",        "isDefault": "1",        "status": "0",        "orgName": "中国移动",        "mobile": "18767876561",        "statusName": "正常"，        "acctTypeName":""//用户类型    } ]//审批方式信息，对应接口返回参数如下,返回那种方式是根据策略配置"apprTypeVoList":[    {        "apprTypeCode":"1",        "apprTypeDesc":"现场审批"    },    {        "apprTypeCode":"2",        "apprTypeDesc":"短信密钥"    },    {        "apprTypeCode":"3",        "apprTypeDesc":"短信网关"    },    {        "apprTypeCode":"R",        "apprTypeDesc":"回复网关+短信"    },    {        "apprTypeCode":"7",        "apprTypeDesc":"工单审批"    }]//金库会话ID,对应接口返回参数如下"goldSessionId":"1231231"//申请者id"mainAcctId": 0//资源帐号id"resAcctId": 0//资源实体id"resEntityId": 0//金库页面最大等待时间，时间可配，单位秒，弹出金库页面后开始倒计时，在此时间内为完成审批则，需要关闭审批页面阻断操作"noCheckTimeOut": "180"//授权方式， * 1：审批单次有效 * 2：审批时间段有效 * 3：由操作者自主选择"triggerType":"1"//时间段预约最大不超过配置预约时间，单位分钟, 当triggerType=2时，申请时校验页面时间不能大于此值"maxTime":"80" |
+
+     
+调用接口/atom/amc/gold/reason/queryUserAvailable获取与金库操作人关联的金库申请原因信息，该接口返回数据不一定存在，不存在的情况下在金库申请时，可以手动输入申请原因信息，接口参考4A产品对外标准接口 5.12查询金库申请原因列表 ；
+解析金库申请原因，在金库申请页面以下了列表形式展示，在使用时如果数据存在，可以直接选中一条使用，也支持使用新填写的申请原因信息；
+获取到金库页面的必要信息后需要打开金库申请页面，并渲染数据显示，页面大致信息包含以下内容，如截图所示：
+
+注意：
+授权方式：1：审批单次有效 * 2：审批时间段有效 * 3：由操作者自主选择
+triggerType=1时，页面只显示单次有效；triggerType=2时，页面只显示时间段有效，并显示有效时间的填写框；triggerType=3时，单次有效、间段有效有效同时显示，由用户自己选择，默认选择单次有效，当切换时间的有效时，联动显示有效时间的填写框；
+审批人：审批人信息在页面显示时是以下拉列表形式展示，申请时选择一个审批人；
+审批方式：审批方式根据策略配置可能存在多种，展示为单选，在具体申请时只能选择一种方式；
+申请：以现场审批为例，在发起申请前不需要显示审批人的帐号和密码输入框信息，在发起申请成功后，隐藏申请按钮，显示审批人信息，主帐号是上面选中的审批人，自动填充，密码需要审批人手动输入;
+当选中'短信网关'审批方式时,此时发起申请,需要轮训调用/gold/open/approval/status/query接口, 当返回结果中applyStatus=1时,则表示审批人已经审批通过;
+当选中'回复网关+短信'审批方式时,此时发起申请,需要轮训调用/gold/open/approval/status/query接口,当返回结果中applyStatus=4时 ,则表示审批人已经审批,此时需要显示一个短信码输入框,输入申请人接收到的短信验证码,然后再调用/gold/open/approval/validate/smskey接口进行验证,验证成功标识审批完成;
+
+自定义页面打开方式参考 5.1.2 。
+
+金库申请页面渲染完成后，选择填写完必要信息，调用金库接口/gold/open/approval/apply发起金库申请，接口参考4A产品对外标准接口 5.2金库申请接口 ；
+解析金库申请返回结果，接口参考4A产品对外标准接口 5.2金库申请接口，当时返回参数中code=000000，checkStatus=0是表示申请成功；
+如果审批方式选择的是"短信网关"、"回复网关+短信"，这种两种方式需要等待审批人接收到审批短信回复“Y”之后才能进行下一步操作，所以在申请成功后需要发起定时轮询调用/gold/open/approval/status/query接口获取审批人审批状态，从而判断是否继续后续操作；
+现场审批为例，审批人输入密码后，调用接口/gold/open/approval/validate/acctpwd发起金库审批请求，接口参考4A产品对外标准接口 5.4 现场审批验证接口 ；
+解析金库审批返回结果判断是否审批验证成功，接口参考4A产品对外标准接口 5.4 现场审批验证接口，当code=000000时表示审批成功，code!=000000时需要具体看msg返回信息；
+金库验证成功后需要调用金库审批结果返回通知接口/gold/page/approval/goldbank-page/returnvalue验证金库审批最终结果，接口参考4A产品对外标准接口 5.13金库审批结果返回通知接口 ；
+审批结果会返回上层调用页面回调函数，审批结果格式：1(审批结果)#1234(流水号)#11234(token),可为空)，当审批结果为1时，表示审批通过，应用侧可以继续进行业务操作，其他审批结果编码参考接口文档；
+当审批结果为1且token不为空时，(为可选步骤)如果应用侧需要进一步确认审批结果是否正确，可以获取审批结果中的token参数，对审批结果进行二次验证，审批结果二次验证接口为/gold/open/approval/check/token，根据二次验证接口返回结果判断是否继续进行操作，接口参数参考4A产品对外标准接口 5.8金库审批二次验证接口 ；
+金库审批二次验证接口返回审批结果，最终确定是否操作放行；

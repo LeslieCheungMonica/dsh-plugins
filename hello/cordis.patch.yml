@@ -1,0 +1,13 @@
+# The dsh-hello bundle layer: one Loader entry mounting this package.
+#
+# `name` is the bare package name so resolution runs through Node from the
+# profile directory (`$DSH_HOME/profiles/web/node_modules`) rather than from a
+# hard-coded absolute path. The `id` is the Loader entry id the Web plugin list
+# keys on and shows in a card's detail line.
+- insert:
+    - id: hello
+      name: dsh-hello
+      # Optional. The plugin's Config schema already defaults this to "Hello";
+      # restate it here (a patch replaces the whole config) to change it:
+      # config:
+      #   greeting: Hi

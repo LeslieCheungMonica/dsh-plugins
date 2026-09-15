@@ -1,0 +1,44 @@
+# dsh-feishu-login's bundle layer — one Loader row.
+#
+# Unlike dsh-web-ui this plugin takes NOTHING over: the host half only adds
+# named routes plus one index.html tap, and the browser half only fills the
+# additive `shell.overlay` list seat. No shipped row needs disabling.
+#
+# `name` must be the BARE package name: it is the Loader's resolution
+# specifier AND the module-table id the client bundle registers under, which
+# is also the `/plugins/<id>/client.js` route segment. `id` is the free-form
+# Loader entry id shown in the plugin list.
+#
+# Install ONE way: either add this package to the profile's
+# `dsh.profile.bundles` (this file applies), or symlink the package into the
+# profile's node_modules and copy this entry into the profile's own
+# `cordis.patch.yml`. Doing both inserts the row twice.
+#
+# The row stays INERT until an appId is configured (and its secret resolves):
+# an unconfigured gate would be a locked door with no key, so the plugin
+# refuses to gate at all and says so in the host log instead.
+- insert:
+    - id: feishu-login
+      name: dsh-feishu-login
+      # config:
+      #   appId: cli_xxxxxxxxxxxxxxxx
+      #   # Secret stays out of configuration: this is a credential REFERENCE
+      #   # (a POSIX-style env name) resolved through ctx.credentials, whose
+      #   # local provider reads the process env, `~/.dsh/.credentials.yaml`,
+      #   # and the project/user `.env` files. Edits to that document take
+      #   # effect live — but the INHERITED PROCESS ENVIRONMENT outranks it,
+      #   # so pick a reference name your shell does not already export
+      #   # (a shadowed name fails silently, as 20002 at exchange time).
+      #   appSecretRef: FEISHU_APP_SECRET
+      #   # Who may enter. Empty means "anyone the app can see". Rules:
+      #   # `*`, `open_id:ou_…`, `union_id:on_…`, `user_id:…`,
+      #   # `email:name@corp.com`, `email:@corp.com`, `mobile:138…`,
+      #   # or a bare value matched against every identity field.
+      #   allow:
+      #     - email:@asiainfo.com
+      #   # Which embeddable QR technique: 'sdk' (default — Feishu's official QR
+      #   # SDK, compact and self-framed) or 'page' (iframe the qrconnect login
+      #   # page; framed by measurement, no third-party script).
+      #   qrEmbed: sdk
+      #   brandName: ForgeX
+      #   gate: true

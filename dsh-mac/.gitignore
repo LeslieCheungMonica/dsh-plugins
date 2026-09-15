@@ -1,0 +1,4 @@
+# Build intermediates and packaged output.
+build/
+dist/
+.DS_Store

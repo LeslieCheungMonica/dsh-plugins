@@ -1,0 +1,26 @@
+# dsh-web-ui's bundle layer — applied after the bundle that defines the rows it
+# targets (`dsh-web-app` defines `ui-sidebar`).
+#
+# 1. Disable the shipped sidebar shell. This plugin OWNS the left column: it
+#    occupies the frame's `sidebar` slot and declares the five child seats
+#    itself. A single-kind slot takes one occupant per priority and a slot key
+#    takes one declarer, so the shipped shell's row must be gone — otherwise
+#    this plugin cannot declare those seats and the shipped workspace browser
+#    and settings shell would lose their home.
+#
+# 2. Mount this plugin as a Loader row. `name` must be the BARE package name:
+#    it is the Loader's resolution specifier AND the module-table id the client
+#    bundle registers under, which is also the `/plugins/<id>/client.js` route
+#    segment. `id` is the free-form Loader entry id shown in the plugin list.
+#
+# Install ONE way: either add this package to the profile's
+# `dsh.profile.bundles` (this file applies), or symlink the package into the
+# profile's node_modules and copy these two entries into the profile's own
+# `cordis.patch.yml`. Doing both inserts the row twice.
+
+- id: ui-sidebar
+  disabled: true
+
+- insert:
+    - id: dsh-web-ui
+      name: dsh-web-ui
