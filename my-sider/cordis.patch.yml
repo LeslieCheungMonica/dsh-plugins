@@ -1,0 +1,38 @@
+# my-sider's bundle layer: one Loader row mounting this package.
+#
+# `name` is the BARE package name, because it is three things at once:
+#   - the Loader's resolution specifier (resolved from the profile directory),
+#   - the client module-table id the browser bundle registers under,
+#   - the `/plugins/<id>/client.js` route segment that serves it.
+# `id` is the free-form Loader entry id shown in the plugin list.
+#
+# Install ONE way. Either add `my-sider` to the profile's `dsh.profile.bundles`
+# (this file then applies on its own), or symlink the package into the profile's
+# `node_modules` and copy the two entries below into the profile's own
+# `cordis.patch.yml`. Doing both mounts the row twice.
+#
+# The shipped rows this plugin does NOT touch: it occupies no `single` slot —
+# both panels are this plugin's own floating surfaces, registered into the
+# additive `shell.overlay` seat, and its two host route families are named and
+# self-owned. So no `disabled: true` entry is needed above.
+- insert:
+    - id: my-sider
+      name: my-sider
+      # Both surfaces are ON by default because the operator asked for them
+      # explicitly by installing this plugin. Everything below is optional
+      # tuning; a value that is present but wrong fails at boot with the field
+      # named (see src/host/options.ts).
+      #
+      # config:
+      #   shell:
+      #     enabled: true
+      #     mode: auto            # auto | read-only | workspace-write | danger-full-access
+      #     shell: /bin/bash
+      #     timeoutMs: 900000
+      #     bufferBytes: 262144
+      #     history: 20
+      #   relay:
+      #     enabled: true
+      #     timeoutMs: 20000
+      #     maxBytes: 8388608
+      #     allowHosts: []        # empty = any http(s) host

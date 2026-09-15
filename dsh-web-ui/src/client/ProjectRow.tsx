@@ -1,6 +1,7 @@
 /**
- * The project row: a project dropdown plus the New Project action, and the
- * flow behind the action.
+ * The project row: a project dropdown, the New Project action, and what the
+ * row's flow reports — a failure strip in the column, a success as a system
+ * banner.
  *
  * "Project" is this plugin's name for a DSH workspace: a host-registered
  * directory (`WorkspaceView`) whose sessions share its path. There is no
@@ -9,115 +10,24 @@
  * recently active one. Selecting a project therefore means opening (or
  * reusing) a session inside it, which is exactly what the shipped New Session
  * flow does.
+ *
+ * The flow itself — the form, the workspace call, and the Feishu folder it
+ * creates — is `projectFlow.ts`; this module renders it and owns the copy.
  */
-import { useCallback, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import {
-  IconChevronDownOutline14, IconEditOutline16, IconFolderClose16, IconFolderOpen16,
-  IconProjectAddOutline16, IconTrashOutline16, Menu,
+  IconCheckOutline16, IconChevronDownOutline14, IconEditOutline16, IconFolderOpen16,
+  IconProjectAddOutline16, IconTrashOutline16, Menu, Toast,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { MenuEntry } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 import type { WorkspaceId, WorkspaceView } from '@deepseek-ai/dsh-client-runtime/client'
-import { NS, type ShellInjected } from './contract.ts'
+import { NS } from './contract.ts'
+import type { ProjectFlow } from './projectFlow.ts'
 
 /** The translator seat this plugin's copy arrives through. */
 type T = TranslateNS<typeof NS>
-
-/** The New Project flow's observable state and entry points. */
-export interface ProjectFlow {
-  /** A chooser, a directory read, or a create call is in flight. */
-  readonly busy: boolean
-  /** Last failure message, cleared on the next attempt. */
-  readonly error: string | null
-  /** True while the in-app folder browser stands in for a missing native chooser. */
-  readonly browserOpen: boolean
-  /** Start the flow: native chooser first, in-app browser when it is unavailable. */
-  readonly newProject: () => void
-  /** Open the in-app browser directly (the menu's own affordance). */
-  readonly browse: () => void
-  /** Dismiss the in-app browser without adopting anything. */
-  readonly closeBrowser: () => void
-  /** Adopt one absolute path: register it as a project, then open a session in it. */
-  readonly adoptPath: (path: string) => void
-  /** Dismiss the failure strip. */
-  readonly dismissError: () => void
-}
-
-/**
- * Message text of an unknown throw, preferring the error's own message.
- * @param reason - the caught value.
- * @returns display text.
- */
-function messageOf(reason: unknown): string {
-  return reason instanceof Error ? reason.message : String(reason)
-}
-
-/**
- * Drive the New Project flow over the runtime's public workspace services.
- *
- * The host's directory capability is a boot-time choice (`native` on a local
- * macOS session, `browse` over SSH or LAN): `pickDirectory()` throws
- * `directory-picker-unavailable` when no native chooser exists, so the flow
- * falls back to the in-app browser over `listDirectory`/`createDirectory`
- * instead of leaving the button dead.
- *
- * @param injected - this plugin's runtime face (from the slot registration).
- * @param t - namespace-bound translate.
- * @returns the flow state and its entry points.
- */
-export function useProjectFlow(injected: ShellInjected, t: T): ProjectFlow {
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [browserOpen, setBrowserOpen] = useState(false)
-  const { createWorkspace, pickDirectory, startSession } = injected
-
-  const adoptPath = useCallback((path: string): void => {
-    setError(null)
-    setBusy(true)
-    void (async () => {
-      try {
-        const workspace = await createWorkspace({ path })
-        setBrowserOpen(false)
-        startSession(workspace.workspaceId)
-      } catch (reason) {
-        setError(messageOf(reason))
-      } finally {
-        setBusy(false)
-      }
-    })()
-  }, [createWorkspace, startSession])
-
-  const newProject = useCallback((): void => {
-    setError(null)
-    setBusy(true)
-    void (async () => {
-      try {
-        const path = await pickDirectory()
-        // Null is the operator's cancel: silent, and no project is created.
-        if (path === null) return
-        setBusy(false)
-        adoptPath(path)
-      } catch {
-        // No native chooser on this host — browse in the page instead.
-        setBrowserOpen(true)
-      } finally {
-        setBusy(false)
-      }
-    })()
-  }, [adoptPath, pickDirectory])
-
-  return {
-    busy,
-    error,
-    browserOpen,
-    newProject,
-    browse: useCallback(() => { setBrowserOpen(true) }, []),
-    closeBrowser: useCallback(() => { setBrowserOpen(false) }, []),
-    adoptPath,
-    dismissError: useCallback(() => { setError(null) }, []),
-  }
-}
 
 /**
  * Render the failure strip of the New Project flow.
@@ -141,6 +51,60 @@ export function ProjectErrorStrip({ flow, t }: { flow: ProjectFlow; t: T }): Rea
   )
 }
 
+/**
+ * Announce that the project's Feishu folder was created.
+ *
+ * A SYSTEM banner, not a row of the column: the column exists to navigate, and a
+ * success is something the operator reads once rather than state they have to
+ * dismiss — as a strip it would also push the session list down for four seconds
+ * on every project creation. This is the shell's own transient banner (top
+ * center, rendered through a body portal, hold-then-fade), the same surface the
+ * shipped UI uses for its notices.
+ *
+ * A FAILURE deliberately does not come here: it carries a fix (a permission, a
+ * login, the network), so it stays in the column until the operator dismisses it.
+ * @param props - the flow plus the copy seat.
+ * @returns the banner, or null while no notice is pending.
+ */
+export function ProjectFolderToast({ flow, t }: { flow: ProjectFlow; t: T }): ReactNode {
+  const notice = flow.systemNotice
+  if (notice === null) return null
+  return (
+    <Toast
+      // Keying by the per-show sequence restarts the hold-then-fade cycle when
+      // the SAME sentence is announced again — which is what creating a second
+      // project with an equal name does.
+      key={notice.seq}
+      text={notice.text}
+      icon={<IconCheckOutline16 />}
+      onDone={flow.dismissSystemNotice}
+    />
+  )
+}
+
+/**
+ * Render a Feishu-folder failure in the column, where its fix can stay visible.
+ * @param props - the flow plus the copy seat.
+ * @returns the strip, or null while the flow has nothing to report.
+ */
+export function ProjectFolderStrip({ flow, t }: { flow: ProjectFlow; t: T }): ReactNode {
+  const notice = flow.folderNotice
+  if (notice === null) return null
+  return (
+    <div data-wui="folderNotice" data-tone={notice.tone} role="alert">
+      <span data-wui="folderNoticeText">{notice.text}</span>
+      <button
+        type="button"
+        data-wui="iconButton"
+        aria-label={t('feishu.folder.dismiss')}
+        onClick={flow.dismissFolderNotice}
+      >
+        ×
+      </button>
+    </div>
+  )
+}
+
 /** One dropdown row's label: the project title over its dimmed path. */
 function projectCell(workspace: WorkspaceView): ReactNode {
   return (
@@ -156,7 +120,7 @@ function projectCell(workspace: WorkspaceView): ReactNode {
  * @param props - projects, the derived current one, and the two actions.
  * @returns the row element.
  */
-export function ProjectRow({ workspaces, currentId, rail, busy, onSelect, onNewProject, onBrowse, onRenameProject, onDeleteProject, t }: {
+export function ProjectRow({ workspaces, currentId, rail, busy, onSelect, onNewProject, onEditProject, onDeleteProject, t }: {
   workspaces: readonly WorkspaceView[]
   currentId: WorkspaceId | undefined
   rail: boolean
@@ -164,9 +128,15 @@ export function ProjectRow({ workspaces, currentId, rail, busy, onSelect, onNewP
   /** Scope the column to a project. Selecting does NOT start a session. */
   onSelect: (workspaceId: WorkspaceId) => void
   onNewProject: () => void
-  onBrowse: () => void
-  /** Act on the SELECTED project; absent in the degraded brand-row mode, where the shipped browser owns both dialogs. */
-  onRenameProject?: (() => void) | undefined
+  /**
+   * Act on the SELECTED project; absent in the degraded brand-row mode, where the
+   * shipped browser owns it.
+   *
+   * There is no separate "rename" row any more: the name is one of the fields the
+   * edit form changes, so a second dialog that changes only that field would be a
+   * smaller version of the same thing.
+   */
+  onEditProject?: (() => void) | undefined
   onDeleteProject?: (() => void) | undefined
   t: T
 }): ReactNode {
@@ -188,13 +158,6 @@ export function ProjectRow({ workspaces, currentId, rail, busy, onSelect, onNewP
       label: t('project.menu.new'),
       icon: <IconProjectAddOutline16 size={16} />,
     },
-    // The in-app browser is also a first-class route, not only the fallback for
-    // a host whose native chooser is missing.
-    {
-      id: '__browse',
-      label: t('project.menu.browse'),
-      icon: <IconFolderClose16 size={16} />,
-    },
     // Actions on the SELECTED project. They are rows of their own — not a
     // submenu on each project row — because a MenuItem carrying a submenu opens
     // its children instead of reporting the click, which would leave project
@@ -203,9 +166,9 @@ export function ProjectRow({ workspaces, currentId, rail, busy, onSelect, onNewP
       ? []
       : [
         { type: 'separator', id: '__sep2' } satisfies MenuEntry,
-        ...(onRenameProject === undefined ? [] : [{
-          id: '__rename',
-          label: t('rename.project.menu'),
+        ...(onEditProject === undefined ? [] : [{
+          id: '__edit',
+          label: t('project.edit.menu'),
           icon: <IconEditOutline16 size={16} />,
         } satisfies MenuEntry]),
         ...(onDeleteProject === undefined ? [] : [{
@@ -215,7 +178,7 @@ export function ProjectRow({ workspaces, currentId, rail, busy, onSelect, onNewP
           danger: true,
         } satisfies MenuEntry]),
       ]),
-  ], [current, onDeleteProject, onRenameProject, t, workspaces])
+  ], [current, onDeleteProject, onEditProject, t, workspaces])
 
   return (
     <div data-wui="projectRow" data-wui-rail-in="true">
@@ -247,8 +210,7 @@ export function ProjectRow({ workspaces, currentId, rail, busy, onSelect, onNewP
         onSelect={(id) => {
           setOpen(false)
           if (id === '__new') { onNewProject(); return }
-          if (id === '__browse') { onBrowse(); return }
-          if (id === '__rename') { onRenameProject?.(); return }
+          if (id === '__edit') { onEditProject?.(); return }
           if (id === '__delete') { onDeleteProject?.(); return }
           onSelect(id as WorkspaceId)
         }}

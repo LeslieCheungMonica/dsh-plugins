@@ -9,8 +9,11 @@ the shell:
 - the session list below them shows **only the selected project's sessions** —
   no other project's sessions appear, and switching projects re-scopes it;
 - the New Session button starts its session **in the selected project**;
-- choosing the project's folder is the New Project flow: pick a workspace
-  directory → register it as a DSH workspace → open a session in it;
+- choosing a project's folder is the **New Project form** (`+` in the project
+  row, or `新增项目…` in its menu): name the project, choose a local folder as
+  its workspace, and say whether it is a new product, an existing one, or not
+  decided yet — then the folder is registered as a DSH workspace and a session
+  opens in it (see [The New Project form](#the-new-project-form));
 - the **lower half of the column is the Feishu document panel**: the signed-in
   `lark-cli` user, their personal knowledge base (`个人知识库` / `my_library`),
   and its directories and documents, one lazy level at a time (see
@@ -52,9 +55,11 @@ list is a different projection of the same stores, not a setting of it. Kept:
 open, live status dot (waiting / running / running subagents / finished), the
 current-session highlight, search, rename, archive. Dropped on purpose: fork, the
 host-side content search, manual reordering, and the per-workspace
-expand/collapse tree. Project **rename and delete** moved to the dropdown, which
-now carries them as rows acting on the selected project (the shipped browser used
-to own those dialogs).
+expand/collapse tree. Project **edit and delete** moved to the dropdown, which
+carries them as rows acting on the selected project (the shipped browser used to
+own the rename dialog). The dropdown's rows are: the projects, **新增项目…**, then
+**编辑项目…** and **删除项目** for the selected one — see
+[Editing a project](#editing-a-project) for what the edit form changes.
 
 `project` is this plugin's word for a DSH **workspace**: a host-registered
 directory whose sessions share its path.
@@ -288,6 +293,7 @@ Feishu credentials must not reach a browser. So the work is split.
 | `GET /dsh-web-ui/lark/state` | the signed-in user (`auth status` + `contact +get-user`) and the personal knowledge base (`wiki spaces get space_id=my_library`) |
 | `GET /dsh-web-ui/lark/spaces` | the readable knowledge spaces, personal library first (Feishu never returns `my_library` from `space-list`, so it is resolved separately) |
 | `GET /dsh-web-ui/lark/nodes?space=…&parent=…&pageToken=…` | one page of one level of wiki nodes (`wiki +node-list`, page size 50) |
+| `POST /dsh-web-ui/lark/folder` `{path}` | the project's folder in the deployment's Feishu archive folder — see [The project's Feishu folder](#the-projects-feishu-folder) |
 
 Three properties make that seam safe to expose to a page:
 
@@ -327,6 +333,146 @@ Notes for operators:
 - the host half is loaded by the Loader **once per process**: editing
   `src/host/**` needs `dsh web` restarted, while the browser half only needs a
   rebuild and a reload.
+
+## The New Project form
+
+`+` in the project row (and `新增项目…` in its menu) opens a form
+(`src/client/NewProjectDialog.tsx`) instead of jumping straight to the OS folder
+dialog. It asks the three things a project needs a record of:
+
+| Field | What it is |
+|---|---|
+| **项目名称 / Project name** | the workspace's TITLE — what the column shows. The folder is where the code is; the name is what the project is called. |
+| **工作空间目录 / Workspace folder** | an existing absolute directory, chosen the old way (below): the host's native chooser, or this plugin's in-app browser when the host has none. |
+| **产品背景 / Product background** | one of **新项目** (new product), **已有产品** (existing product), **不确定** (not decided yet). |
+
+**`已有产品` reveals a fourth row: the product card** (`产品卡`). The cards come
+from the HOST (`GET /dsh-web-ui/lark/cards`, see
+[Editing a project](#editing-a-project) for where that list comes from), so the
+row is a real `<select>` when the deployment configured a catalogue, and says
+"no cards configured" — not an error — when it did not.
+
+Two behaviours are worth stating because they are not obvious from the layout:
+
+- **the draft lives in the flow, not in the dialog** (`projectFlow.ts`). The page
+  has one modal layer, so opening the in-app browser CLOSES the form; the folder
+  it reports comes back to a form that still holds everything already typed, and
+  an empty name field takes the folder's last segment as its default (the same
+  name the host would have derived).
+- **nothing is created until the form is submitted.** Feeding in a path is one
+  field, not a project: `workspace.create` runs on confirm, and the project name
+  follows as `workspace.rename` only when it differs from the folder's own last
+  segment — a form left at its defaults costs no second round trip.
+- **the submission also RECORDS the project** (`POST /dsh-web-ui/lark/project`):
+  a DSH workspace holds a path and a title, so the background and the card are
+  stored by this plugin — otherwise the edit form would prefill from a record
+  that was never written.
+
+## Editing a project
+
+The dropdown's **编辑项目…** row opens the same form that creates a project, in
+EDIT mode: it prefills from what was recorded and saves over it. The menu no
+longer has a rename row of its own (the name is one of the form's fields) and no
+longer has a "browse folders" row (choosing a directory is the form's folder
+field, for a project that is being created).
+
+What the form changes, and what it refuses to:
+
+| Field | Behaviour while editing |
+|---|---|
+| Project name | Editable. Saved through `workspace.rename`, so the sidebar, the workspace title and the Feishu folder name all move together |
+| Workspace directory | **Read-only.** A workspace IS its path and sessions belong to it, so "changing the folder" would not edit a project — it would move it and orphan its history. The form says so instead of offering a chooser |
+| Product background | Editable: 新项目 / 已有产品 / 不确定 |
+| Product card | Editable, and asked only for 已有产品 — the same conditional row as in creation. A card that was recorded but is no longer offered stays selectable rather than being silently dropped |
+
+**Where those answers live.** A DSH workspace is `{ path, title }` and nothing
+else, so this plugin keeps its own record beside the harness's storages:
+
+- `~/.dsh/storages/web_ui_projects.json` (or `DSH_WEB_UI_PROJECTS_FILE`), one
+  document, records keyed by the project's **path** — what the operator
+  recognizes and what survives a registry rebuild;
+- each write goes through a sibling temporary file and a rename, so a crash
+  mid-write leaves the previous records intact;
+- `GET /dsh-web-ui/lark/project?path=…` reads one record (`null` when the project
+  has none, which is a real state for projects that predate this store), and
+  `POST` writes one;
+- the record's `name` is a COPY of the registry's title, kept so the edit form can
+  prefill; the registry stays the authority, and the same save writes both — the
+  rename first, because it is the half the operator sees.
+
+**The product-card catalogue** is deployment data, served to the form by
+`GET /dsh-web-ui/lark/cards` from, in order: `DSH_WEB_UI_PRODUCT_CARDS` (inline
+JSON), then `products.json` beside the project records, else an EMPTY catalogue —
+which the form renders as "no cards configured", not as an error. A malformed
+catalogue is reported as a failure, because "you have no cards" and "your cards
+file is broken" are different problems. Two of the form's three background
+answers need no card, so an unconfigured deployment is a usable one.
+
+## The project's Feishu folder
+
+Creating a project also creates a **same-named folder in this deployment's
+Feishu folder** — the archive folder
+`https://asiainfo-sec.feishu.cn/drive/folder/IE6SfqKh3lRv2odSLkHccYh5nog`
+(`FDE实施资产沉淀汇总`), where every project gets one directory of its own.
+
+It is a side effect of the flow, never a gate on it
+(`src/client/projectFlow.ts` + `POST /dsh-web-ui/lark/folder`):
+
+1. the form's confirmed path is registered and a session opens in it — the
+   project is usable;
+2. the folder request is fired, **not awaited**, and reports itself: a creation
+   through the shell's **system banner** (top center, portalled to `document.body`,
+   fades on its own — the same transient surface the shipped UI uses), and a
+   FAILURE through a warning strip under the project row, because a failure
+   carries a fix (a permission, a re-login, the network) that has to stay on
+   screen until it is read.
+
+A Feishu outage therefore costs a notice, not a project. Neither report is a row
+of the column when things go right: the sidebar is a navigation surface, and a
+success there would push the session list down for four seconds on every project
+creation. A repeated success re-announces itself (the banner is keyed per show).
+
+**No duplicate check, on purpose.** The host does not look for an existing
+folder of that name before creating: it calls `drive +create-folder` once and
+reports what Feishu made (`createFolder` in `src/host/lark.ts`). Feishu Drive
+accepts two sibling folders with the same name and never refuses the second, so
+"already exists" could only ever be a *read* of the parent folder — a listing
+that costs a scope (`space:document:retrieve`) the rest of the plugin does not
+need. The consequence is deliberate and worth stating plainly: **if a folder of
+that name is already there, this creates a SECOND one**, and re-adding the same
+project adds another folder rather than reusing the first.
+
+**The folder is named after the PROJECT.** The panel sends the project's
+`name` — what the operator typed into the New Project form, which is also the
+workspace's title and what the sidebar shows — and that is the folder's name. It
+is deliberately not the directory's last segment: the form's name field only
+SUGGESTS that segment, so a project called `陕西代码模型` living in `~/work/sx-model`
+gets `陕西代码模型` in the archive. `path` travels with the name so a request still
+makes sense without a title, and the path's segment is the fallback when the
+panel has no name to send.
+
+**The parent is the host's decision.** The host always uses its own configured
+parent token, so a caller cannot address another folder — a browser-supplied
+parent would let the page write anywhere the login can reach. The `name` itself
+is validated as a NAME rather than as a path (a separator, `.` or `..` is a 400,
+never a silent rewrite), because the sidebar and the archive disagreeing about
+what a project is called is exactly the confusion this feature exists to remove.
+
+What IS still enforced before anything is written: the parent token and the name
+are validated on the host (the name must be non-blank, free of control
+characters, and within Feishu's 256-byte ceiling), and a create whose answer
+carries no `folder_token` is reported as a failure rather than as a success.
+
+Requirements and knobs:
+
+| Fact | Detail |
+|---|---|
+| Folder name | the project's name from the New Project form (workspace title); the path's last segment when no name is sent |
+| Scope | creating needs **`space:folder:create`** on the `lark-cli` login — the listing scope is no longer involved |
+| CLI | the same `lark-cli` the document panel uses; `DSH_WEB_UI_LARK_CLI` pins its path |
+| Parent folder | `DSH_WEB_UI_LARK_FOLDER` overrides the token for another tenant or another archive folder (default: the folder above) |
+| Identity | `--as user` — the folder is created as the signed-in operator, so it inherits their permissions |
+| Failure answer | HTTP 200 with `{ ok: false, error: { code, message } }` inside — content the strip renders. Only a malformed request is a 4xx |
 
 ## Why it can replace the column without losing anything
 
@@ -451,8 +597,10 @@ needs `dsh web` restarted before the new code is live.
 
 ```sh
 node scripts/smoke-git.mjs                            # the git drawer: routes + DOM, no GUI needed
+pnpm harness:new-project-form                         # the New Project form, no GUI needed
 CHROME=<chromium> node scripts/smoke.mjs              # structure, rail, plugin list
 CHROME=<chromium> node scripts/smoke-new-project.mjs  # New Project flow, host mocked at the wire
+CHROME=<chromium> node scripts/preview/measure-form.mjs  # the form's geometry, in a real browser
 ```
 
 `smoke-git.mjs` needs no running GUI and **no login**: it is the only test here
@@ -491,10 +639,46 @@ Settings → Plugins. It answers `session.rename` and `workspace.archiveSession`
 the wire so the row actions can be exercised without writing to real sessions.
 
 `smoke-new-project.mjs` mocks `host.pickDirectory` as unavailable,
-`host.listDirectory`, `workspace.create`, and `session.create`, then asserts the
-whole chain — picked folder → `workspace.create {path}` → `session.create
-{workspaceId}` → the list re-scopes to the new project — without touching the
-operator's real workspace registry and without opening an OS dialog.
+`host.listDirectory`, `workspace.create`, `workspace.rename`, and
+`session.create`, then walks the whole chain through the FORM — `+` → the form →
+its folder chooser → the in-app browser → back to the form → confirm →
+`workspace.create {path}` → `session.create {workspaceId}` → the list re-scopes to
+the new project — without touching the operator's real workspace registry and
+without opening an OS dialog. It asserts the form's own copy, the three product
+backgrounds, and the conditional product-card row. It also mocks
+`POST /dsh-web-ui/lark/folder` and asserts both halves of the folder side effect:
+a created folder is reported as an informational strip, and a Feishu scope
+failure is reported as a warning **while the project is still created**.
+
+Two offline harnesses cover the folder side effect without a running host, which
+matters here because this deployment's GUI sits behind the QR login gate:
+
+| Command | What it pins down |
+|---|---|
+| `pnpm harness:project-record` | the project record's storage and routes: a write round-trips through the pinned document, a project with no record answers `null`, a malformed/empty/future-versioned document degrades to "no records" and is repaired by the next write, a bad request never touches the file (and is a 400), and the card catalogue distinguishes "none configured" from "broken" and refuses duplicate ids |
+| `pnpm harness:folder-route` | the host route's contract: POST only, 400s for a malformed body (which never reach the CLI), the folder named from the request's `name` (the project's name) with the path's segment as the fallback and a path-shaped name refused, **exactly one create and ZERO parent-folder reads** per request (the create-only rule, asserted rather than assumed), a repeat request creating a second folder, the deployment's parent token travelling to the CLI even when the request names another, and a Feishu failure answered as 200/`ok:false` |
+| `pnpm harness:folder-flow` | the browser flow: the exact request it sends (path **and** project name), that the session opens **before** the folder call, that a success leaves the sidebar strip EMPTY and announces itself through the system banner (re-announced on a repeat run), that a failure goes to the strip and NOT to the banner, every failure sentence read from the real dictionary, and that no dedup copy is reachable any more |
+| `pnpm harness:new-project-form` | the form itself, driven by clicks in jsdom: what it asks for, that opening it touches nothing, the product-card row appearing for `已有产品` and for nothing else (fed by the host's catalogue, which this harness answers), the folder field falling back to the browser on a host with no native chooser, the draft surviving that round trip, what the submission sends — and EDIT mode end to end: the prefill from the record, the read-only directory, the save reaching both `workspace.rename` and the record |
+
+`harness:folder-route` drives the real `registerLarkRoutes` against a fake
+webserver that hands back the handler, with a stubbed `lark-cli` on disk; the
+adapter's create path was additionally probed against the real tenant, which is
+where two facts came from: the live `scope-missing` envelope (what a missing
+permission looks like end to end) and that Feishu happily accepts two sibling
+folders with the same name — which is why "already exists" could never have been
+answered by the create call itself. `harness:folder-flow` and `harness:new-project-form` render the real flow
+and the real dialog from source in jsdom (bundled by `scripts/harness/tsdown.mjs`,
+whose UI-primitives stub is generated from the real package's icon declarations
+so a new icon can never silently break the harness) with the runtime's project
+services stubbed.
+
+`scripts/preview/measure-form.mjs` is the LAYOUT check, and it needs a browser
+but no host: it renders the dialog's markup to a standalone HTML file
+(`new-project-dialog.html`, same plugin stylesheet, same shipped theme tokens),
+then reads the geometry back out — the widened card, the folder row's ellipsis,
+the three answers on one line, the accent on the chosen answer. It exists because
+a jsdom render has no cascade, so no other test here can tell a styled form from
+an unstyled one.
 
 The Feishu panel was verified the same way: the host routes answer
 `/dsh-web-ui/lark/{state,spaces,nodes}` against the real `lark-cli` (checked
@@ -520,6 +704,9 @@ back afterwards).
 | Column structure | `src/client/Shell.tsx` |
 | Region split (sessions above, Feishu below) | `Shell.tsx` — `DEFAULT_SPLIT`/`MIN_SPLIT`/`MAX_SPLIT`, key `dsh-web-ui.split`; drag the divider, double-click it to reset |
 | Project dropdown + New Project flow | `src/client/ProjectRow.tsx` |
+| The New Project form (fields, copy, conditional card row) | `src/client/NewProjectDialog.tsx` |
+| The New Project flow (draft, chooser, submission, Feishu folder) | `src/client/projectFlow.ts` |
+| Where product cards come from | `src/host/products.ts` (host) → `GET /dsh-web-ui/lark/cards` → `src/client/productCards.ts` (types) |
 | Project scope (selection store + follow rule) | `src/client/project.ts` |
 | The project-scoped session list | `src/client/SessionList.tsx` |
 | The Feishu document panel | `src/client/LarkDocsPanel.tsx` (+ `src/client/larkapi.ts`) |
@@ -536,7 +723,10 @@ back afterwards).
 | Initialize-a-repository empty state | the `gitEmpty` block in `GitPanel.tsx` (the `not-a-repo` arm) |
 | The remotes section | `GitBranches.tsx`, `remoteAddressItems()` + the remotes `<section>` |
 | Which knowledge base opens by default | `PERSONAL_SPACE_ID` in `src/client/larkapi.ts`; the host alias is `PERSONAL_LIBRARY` in `src/host/lark.ts` |
-| Rename / delete dialogs | `src/client/TextPromptDialog.tsx`, `src/client/ConfirmDialog.tsx` |
+| The project record (store + routes) | `src/host/projects.ts`, `POST`/`GET /dsh-web-ui/lark/project` |
+| The product-card catalogue | `src/host/products.ts` (`DSH_WEB_UI_PRODUCT_CARDS`, else `products.json` beside the records) |
+| The project form (create + edit) | `src/client/NewProjectDialog.tsx`, driven by `src/client/projectFlow.ts` |
+| Delete dialog | `src/client/ConfirmDialog.tsx` |
 | Fallback folder browser | `src/client/BrowseFoldersDialog.tsx` |
 | Copy (zh + en) | `src/client/locales.ts` (namespace `webui`) |
 | Brand mark (AsiaInfo emblem) | `src/client/AsiaInfoMark.tsx` |
@@ -647,7 +837,17 @@ working.
   repository* runs `git init` in the project directory, but nothing here creates
   the directory itself, clones into it, or edits `.gitignore`. Cloning is the
   agent's `git_repo` tool (`action: 'clone'`), and the folder is the New Project
-  flow above.
+  form above.
+- **The project record is this plugin's own sidecar, not a DSH fact.** The name
+  and the folder ARE workspace fields (the title and the path), but the product
+  background and the product card have no host field, so they live in a document
+  this plugin owns (`~/.dsh/storages/web_ui_projects.json`, keyed by path — see
+  [Editing a project](#editing-a-project)). Consequences worth knowing: a project
+  created before this store existed has no record until it is edited (the form
+  says so rather than inventing an answer), the record's name is a copy that the
+  registry can overtake if something else renames the workspace, and moving the
+  project's directory is deliberately NOT offered, because a workspace is
+  identified by its path.
 - **The git drawer cannot resolve conflicts.** Conflicts are surfaced as a
   bucket, with an *abort* action for the operation that produced them; there is
   no merge editor, no interactive rebase, and no submodule support.
@@ -675,11 +875,13 @@ working.
   falling back to the most recent one. That is why picking a project opens a
   session in it, and why the row never disagrees with the session list.
 - **`pickDirectory` is the OS dialog** on a local macOS session; the in-app
-  browser (also reachable from the dropdown's *Browse folders…* row) covers
-  hosts whose directory capability is `browse` (SSH/LAN). Picking an existing
-  folder is the only create route, matching the host's `workspace.create`
-  contract — it never creates directories except through the browser's own
-  *New folder*.
+  browser (reachable from the form's *选择本地目录*, and from the dropdown's
+  *Browse folders…* row — which opens the form on the folder field) covers hosts
+  whose directory capability is `browse` (SSH/LAN). Whichever route answers, the
+  path is only a FIELD: the project is registered when the form is submitted, and
+  picking an existing folder is the only create route, matching the host's
+  `workspace.create` contract — it never creates directories except through the
+  browser's own *New folder*.
 - **No settings card.** The plugin appears in the plugin *list* (which is driven
   by Loader entries). A card in the *Plugin configuration* tab needs a host-side
   settings namespace plus a browser card; not implemented here.
@@ -689,3 +891,12 @@ working.
 - **Disabling this plugin alone leaves an empty column** — re-enable the
   `ui-sidebar` entry in the same edit that disables `dsh-web-ui`, since the
   shipped shell only registers when its own row is enabled.
+- **The Feishu project folder is created without a duplicate check, and only for
+  new projects.** The side effect runs at the end of the New Project flow, so a
+  project added before this feature (or while the login lacked
+  `space:folder:create`) has no folder until it is added again — and adding it
+  again CREATES a folder rather than reusing an existing one. Two sibling folders
+  can therefore end up with the same name, by design: Feishu does not refuse the
+  second, and this deployment chose not to spend a `space:document:retrieve`
+  listing to look for the first. Nothing here cleans that up either: Drive
+  deletion is a `high-risk-write` the login here does not carry.

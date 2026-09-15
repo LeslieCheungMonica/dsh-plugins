@@ -29,9 +29,10 @@ import type { ShellProps } from './contract.ts'
 import { BrowseFoldersDialog } from './BrowseFoldersDialog.tsx'
 import { ConfirmDialog } from './ConfirmDialog.tsx'
 import { LarkDocsPanel } from './LarkDocsPanel.tsx'
-import { ProjectErrorStrip, ProjectRow, useProjectFlow } from './ProjectRow.tsx'
+import { NewProjectDialog } from './NewProjectDialog.tsx'
+import { ProjectErrorStrip, ProjectFolderStrip, ProjectFolderToast, ProjectRow } from './ProjectRow.tsx'
+import { useProjectFlow } from './projectFlow.ts'
 import { useProjectScope } from './project.ts'
-import { TextPromptDialog } from './TextPromptDialog.tsx'
 
 /** Wide-content unmount delay; matches the 150ms wide-content fade-out. */
 const COLLAPSE_SETTLE_MS = 150
@@ -119,7 +120,6 @@ export function Shell(props: ShellProps): ReactNode {
   const currentId: WorkspaceId | undefined = selectedId
 
   const flow = useProjectFlow(props, t)
-  const [renameTarget, setRenameTarget] = useState<{ id: WorkspaceId; title: string } | null>(null)
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [projectBusy, setProjectBusy] = useState(false)
   const [projectError, setProjectError] = useState<string | null>(null)
@@ -175,22 +175,6 @@ export function Shell(props: ShellProps): ReactNode {
     persistSplit(splitRef.current)
   }
 
-  const renameProject = (value: string): void => {
-    if (renameTarget === null) return
-    setProjectBusy(true)
-    setProjectError(null)
-    void (async () => {
-      try {
-        await renameWorkspace(renameTarget.id, value)
-        setRenameTarget(null)
-      } catch (reason) {
-        setProjectError(reason instanceof Error ? reason.message : String(reason))
-      } finally {
-        setProjectBusy(false)
-      }
-    })()
-  }
-
   return (
     <div
       data-wui="column"
@@ -233,19 +217,24 @@ export function Shell(props: ShellProps): ReactNode {
         rail={rail}
         busy={flow.busy}
         onSelect={(workspaceId) => { selectProject(workspaceId) }}
-        onRenameProject={() => {
-          if (selected !== undefined) setRenameTarget({ id: selected.workspaceId, title: selected.title })
+        onEditProject={() => {
+          if (selected !== undefined) {
+            flow.editProject({ workspaceId: selected.workspaceId, path: selected.path, title: selected.title })
+          }
         }}
         onDeleteProject={() => {
           setDeleteError(null)
           setDeleteOpen(true)
         }}
         onNewProject={flow.newProject}
-        onBrowse={flow.browse}
         t={t}
       />
 
       <ProjectErrorStrip flow={flow} t={t} />
+      <ProjectFolderStrip flow={flow} t={t} />
+      {/* The creation success is a system banner, not a row here: it renders
+          through a body portal, so the column's layout never moves for it. */}
+      <ProjectFolderToast flow={flow} t={t} />
       {projectError !== null && (
         <div data-wui="error" role="status">
           <span data-wui="errorText">{projectError}</span>
@@ -315,6 +304,24 @@ export function Shell(props: ShellProps): ReactNode {
         {renderSlot('sidebar.settings', { wide })}
       </div>
 
+      {/* The New Project form. It sits ABOVE the folder browser in this tree
+          because choosing a folder hands the page to that browser: the flow
+          closes the form for the round trip and reopens it with the draft
+          intact, so the two dialogs are never up at the same time (one modal
+          layer, two surfaces). */}
+      <NewProjectDialog
+        open={flow.formOpen}
+        mode={flow.formMode}
+        draft={flow.draft}
+        cards={flow.cards}
+        onChange={flow.updateDraft}
+        onChooseFolder={flow.pickWorkspaceFolder}
+        busy={flow.busy}
+        pickError={flow.pickError}
+        onSubmit={flow.formMode === 'edit' ? flow.submitProjectEdit : flow.submitNewProject}
+        onClose={flow.closeForm}
+        t={t}
+      />
       <BrowseFoldersDialog
         open={flow.browserOpen}
         t={t}
@@ -348,17 +355,6 @@ export function Shell(props: ShellProps): ReactNode {
           <span data-wui="errorText">{deleteError}</span>
         </div>
       )}
-      <TextPromptDialog
-        open={renameTarget !== null}
-        title={t('rename.project.title')}
-        label={t('rename.project.label')}
-        initialValue={renameTarget?.title ?? ''}
-        confirmLabel={t('rename.confirm')}
-        cancelLabel={t('picker.cancel')}
-        busy={projectBusy}
-        onSubmit={renameProject}
-        onClose={() => { setRenameTarget(null) }}
-      />
     </div>
   )
 }

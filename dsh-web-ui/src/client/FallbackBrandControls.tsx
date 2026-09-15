@@ -18,7 +18,9 @@ import type { ReactNode } from 'react'
 import type { WorkspaceId } from '@deepseek-ai/dsh-client-runtime/client'
 import type { FallbackProps } from './contract.ts'
 import { BrowseFoldersDialog } from './BrowseFoldersDialog.tsx'
-import { ProjectErrorStrip, ProjectRow, useProjectFlow } from './ProjectRow.tsx'
+import { NewProjectDialog } from './NewProjectDialog.tsx'
+import { ProjectErrorStrip, ProjectFolderStrip, ProjectFolderToast, ProjectRow } from './ProjectRow.tsx'
+import { useProjectFlow } from './projectFlow.ts'
 
 /** Stop an activation event at this subtree's boundary. */
 function consume(event: { stopPropagation: () => void }): void {
@@ -39,6 +41,7 @@ export function FallbackBrandControls(props: FallbackProps): ReactNode {
     ? undefined
     : workspaces.find(workspace => workspace.sessionIds.includes(currentSessionId))?.workspaceId
   const currentId: WorkspaceId | undefined = owning ?? recentWorkspaceId
+  const selected = currentId === undefined ? undefined : workspaces.find(w => w.workspaceId === currentId)
   const flow = useProjectFlow(props, t)
 
   return (
@@ -55,10 +58,33 @@ export function FallbackBrandControls(props: FallbackProps): ReactNode {
         busy={flow.busy}
         onSelect={(workspaceId) => { startSession(workspaceId) }}
         onNewProject={flow.newProject}
-        onBrowse={flow.browse}
+        onEditProject={() => {
+          if (selected !== undefined) {
+            flow.editProject({ workspaceId: selected.workspaceId, path: selected.path, title: selected.title })
+          }
+        }}
         t={t}
       />
       <ProjectErrorStrip flow={flow} t={t} />
+      <ProjectFolderStrip flow={flow} t={t} />
+      <ProjectFolderToast flow={flow} t={t} />
+      {/* The same two dialogs the full column renders, in the same order and for
+          the same reason: the New Project action is the FORM here too, and its
+          folder field is what opens the browser. A degraded path that offered a
+          bare folder chooser would be a second, divergent New Project flow. */}
+      <NewProjectDialog
+        open={flow.formOpen}
+        mode={flow.formMode}
+        draft={flow.draft}
+        cards={flow.cards}
+        onChange={flow.updateDraft}
+        onChooseFolder={flow.pickWorkspaceFolder}
+        busy={flow.busy}
+        pickError={flow.pickError}
+        onSubmit={flow.formMode === 'edit' ? flow.submitProjectEdit : flow.submitNewProject}
+        onClose={flow.closeForm}
+        t={t}
+      />
       <BrowseFoldersDialog
         open={flow.browserOpen}
         t={t}

@@ -102,6 +102,14 @@ export type LarkFailure =
   | 'cli-failed'
   /** The CLI wrote something this adapter could not read as its JSON envelope. */
   | 'cli-unreadable'
+  /**
+   * The login does not carry a scope this call needs. Distinct from
+   * `cli-failed` because the fix is a re-login with that scope, and the
+   * envelope names which one.
+   */
+  | 'scope-missing'
+  /** The caller may not do this to that resource: a folder they cannot read. */
+  | 'forbidden'
 
 /** The adapter's result type: a value, or a typed reason there is none. */
 export type LarkOutcome<T> =
@@ -143,6 +151,26 @@ const SPACES_TTL_MS = 120_000
 /** A level is re-read on every expand, so a short grace period is enough. */
 const NODES_TTL_MS = 20_000
 
+/** Feishu's own ceiling on a folder name. */
+const FOLDER_NAME_MAX_BYTES = 256
+
+/**
+ * The last path segment of a project directory, which is the project's name.
+ *
+ * Kept here — the host — rather than in the browser: it is the host that hands
+ * the value to the CLI, and a name is the one argument in this adapter that is
+ * NOT an opaque token, so it is worth normalizing in the same module that
+ * validates it. Windows separators are handled too, so a project added from a
+ * Windows host does not produce a folder called `C:\work\demo`.
+ * @param path - the project's absolute directory.
+ * @returns the segment, or `''` when the path names no directory.
+ */
+export function folderNameFromPath(path: string): string {
+  const trimmed = path.replace(/[\\/]+$/, '')
+  const at = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'))
+  return (at < 0 ? trimmed : trimmed.slice(at + 1)).trim()
+}
+
 /** The personal document library: a per-user alias, valid only with `--as user`. */
 export const PERSONAL_LIBRARY = 'my_library'
 
@@ -151,6 +179,19 @@ const SPACE_ID_PATTERN = /^(?:my_library|[0-9]{1,32})$/
 
 /** Node tokens are URL-safe base32-ish ids. */
 const NODE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{1,128}$/
+
+/** Drive folder tokens are the same alphabet (`fldcn…` for newer spaces). */
+const FOLDER_TOKEN_PATTERN = NODE_TOKEN_PATTERN
+
+/**
+ * A name this adapter will hand to Feishu: no control characters (`U+0000`–`U+001F`
+ * and `U+007F`, which is what a device path can smuggle in), not blank, and
+ * within Feishu's byte ceiling. Everything else — spaces, dots, emoji, CJK — is
+ * a legitimate folder name and is passed through untouched, because this
+ * adapter's job is to carry the operator's own directory name, not to rewrite
+ * it.
+ */
+const FOLDER_NAME_PATTERN = /^[^\u0000-\u001F\u007F]+$/
 
 /** Page tokens are opaque base64 (padded), sometimes with a `|` separator. */
 const PAGE_TOKEN_PATTERN = /^[A-Za-z0-9+/=|_-]{1,1024}$/
@@ -208,6 +249,29 @@ function looksLikeNetworkFailure(detail: string): boolean {
   return /tls:|handshake failure|x509|certificate|self[- ]signed|dial tcp|connection refused|connection reset|no such host|i\/o timeout|proxyconnect|EOF/i.test(detail)
 }
 
+/**
+ * Classify one of the CLI's own error envelopes into this adapter's vocabulary.
+ *
+ * The CLI already names the reason (`type`/`subtype`); collapsing all of them
+ * into `cli-failed` would make two very different operator problems — "your
+ * network is wrong" and "your login is missing a permission" — read the same in
+ * the panel.
+ * @param type - the envelope's `error.type`.
+ * @param subtype - the envelope's `error.subtype`.
+ * @returns the failure code to report.
+ */
+function failureCode(type: string | undefined, subtype: string | undefined): LarkFailure {
+  if (type === 'network') return 'cli-network'
+  if (type === 'authorization') {
+    return subtype === 'missing_scope' || subtype === 'insufficient_scope' ? 'scope-missing' : 'forbidden'
+  }
+  // Feishu's own refusals arrive under a generic type with a permission-flavoured
+  // subtype (`permission_denied`), which is the shape a folder the caller cannot
+  // read produces.
+  if (subtype !== undefined && /permission|forbidden|denied|no_permission/i.test(subtype)) return 'forbidden'
+  return 'cli-failed'
+}
+
 /** The envelope `lark-cli` prints for a data call. */
 interface Envelope {
   readonly ok?: boolean
@@ -249,8 +313,31 @@ export interface LarkCli {
     parentNodeToken?: string | undefined
     pageToken?: string | undefined
   }) => Promise<LarkOutcome<LarkLevel>>
+  /**
+   * Create a Drive folder named `name` inside `parentFolderToken`.
+   *
+   * It CREATES, unconditionally: it does not look for an existing folder of
+   * that name first. That is a deliberate product decision rather than an
+   * oversight — Feishu allows two sibling folders with the same name and never
+   * refuses the second, so the check could only ever be a read plus a guess; see
+   * the note on `createFolder` below for what that trades away.
+   */
+  createFolder: (input: {
+    parentFolderToken: string
+    name: string
+  }) => Promise<LarkOutcome<LarkFolderResult>>
   /** Drop every cached read, so the next call reaches Feishu again. */
   invalidate: () => void
+}
+
+/** The folder one create call produced. */
+export interface LarkFolderResult {
+  /** The folder's name, as it was requested and as Feishu stored it. */
+  readonly name: string
+  /** The new folder's token, usable for uploads and links. */
+  readonly folderToken: string
+  /** Shareable URL; empty when Feishu reported none. */
+  readonly url: string
 }
 
 /**
@@ -443,8 +530,9 @@ export function createLarkCli(options: { log: LarkLogger }): LarkCli {
         return {
           ok: false,
           // The CLI classifies its own failures; a transport one is worth
-          // distinguishing because the fix is the network, not the account.
-          code: error?.type === 'network' ? 'cli-network' : 'cli-failed',
+          // distinguishing because the fix is the network, not the account, and
+          // an authorization one because the fix is a re-login, not a retry.
+          code: failureCode(error?.type, error?.subtype),
           message: hint === undefined ? message : `${message} (${hint})`,
         }
       }
@@ -664,5 +752,64 @@ export function createLarkCli(options: { log: LarkLogger }): LarkCli {
     nodesCache.clear()
   }
 
-  return { state, spaces, nodes, invalidate }
+  /**
+   * Create one Drive folder under a parent.
+   *
+   * ## Why there is no "does it already exist" check here
+   *
+   * Feishu Drive accepts two sibling folders with the same name and never
+   * refuses the second, so a create call cannot answer "already taken" — the
+   * only way to know is to LIST the parent first and compare names. This
+   * deployment decided against that read: creating the folder is the operator's
+   * intent, and the listing costs a scope (`space:document:retrieve`) that the
+   * panel's other reads do not need. The consequence is deliberate and worth
+   * stating: if a folder of that name is already present, this creates a SECOND
+   * one. Re-adding the same project therefore adds a folder, it does not reuse
+   * the first.
+   *
+   * Everything that IS still checked is checked before any call: the parent
+   * token and the name are validated here, and a name is an ARGV ELEMENT (never
+   * a shell word), so nothing from a request can reshape the command.
+   *
+   * @param input - the parent folder token and the folder name.
+   * @returns the new folder's identity, or a typed failure.
+   */
+  const createFolder: LarkCli['createFolder'] = async (input) => {
+    const { parentFolderToken, name } = input
+    if (!FOLDER_TOKEN_PATTERN.test(parentFolderToken)) {
+      return { ok: false, code: 'cli-failed', message: `not a Drive folder token: ${parentFolderToken}` }
+    }
+    // A name is written INTO Feishu, so an empty or control-bearing one would
+    // create a folder that is impossible to address from a terminal afterwards.
+    if (!FOLDER_NAME_PATTERN.test(name) || name.trim() === '') {
+      return { ok: false, code: 'cli-failed', message: `not a usable folder name: ${JSON.stringify(name)}` }
+    }
+    if (Buffer.byteLength(name, 'utf8') > FOLDER_NAME_MAX_BYTES) {
+      return {
+        ok: false,
+        code: 'cli-failed',
+        message: `the folder name is ${String(Buffer.byteLength(name, 'utf8'))} bytes, over Feishu's ${String(FOLDER_NAME_MAX_BYTES)}-byte ceiling`,
+      }
+    }
+
+    const result = await call([
+      'drive', '+create-folder',
+      '--folder-token', parentFolderToken,
+      '--name', name,
+    ], { userIdentity: true, timeoutMs: CALL_TIMEOUT_MS })
+    if (!result.ok) return result
+    const data = result.value.data as { folder_token?: unknown; url?: unknown } | undefined
+    const token = typeof data?.folder_token === 'string' ? data.folder_token : ''
+    // A create that reported no token is a failure, not a success: the caller
+    // would have nothing to link to or upload into.
+    if (token === '') {
+      return { ok: false, code: 'cli-unreadable', message: `${BIN_NAME} created a folder but reported no token` }
+    }
+    return {
+      ok: true,
+      value: { name, folderToken: token, url: typeof data?.url === 'string' ? data.url : '' },
+    }
+  }
+
+  return { state, spaces, nodes, createFolder, invalidate }
 }

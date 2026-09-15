@@ -382,6 +382,40 @@ const SHELL = `
   word-break: break-word;
 }
 
+/* ── Feishu folder failure strip ─────────────────────────────────────────
+   ONE state, and only one: a failure. A creation that worked is announced by the
+   shell's own system banner instead of by a row here (see ProjectFolderToast), so
+   this strip never has to argue about tone — a row of the column means "act on
+   this", and a success is not that. */
+
+[data-wui='formPath'][data-locked='true'] {
+  color: var(--dsw-alias-label-secondary);
+  /* Read-only: the directory identifies the project, so it is shown as a FACT
+     rather than as a field waiting to be edited. */
+  cursor: default;
+}
+
+[data-wui='folderNotice'] {
+  flex: none;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-bottom: var(--dsh-web-ui-gap);
+  padding: 8px 8px 8px 10px;
+  border: 1px solid var(--dsw-alias-state-warn-primary);
+  border-radius: 8px;
+  background: var(--dsw-alias-state-warn-tertiary);
+  color: var(--dsw-alias-label-primary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+[data-wui='folderNoticeText'] {
+  flex: 1;
+  min-width: 0;
+  word-break: break-word;
+}
+
 /* ── region + foot seats ─────────────────────────────────────────────── */
 
 [data-wui='region'] {
@@ -2301,6 +2335,210 @@ const SHELL = `
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+
+/* ── New Project form ────────────────────────────────────────────────────
+   The dialog's own field vocabulary. It is NOT the column's: a modal renders
+   into document.body, outside the column element, so the column's scoped
+   tokens are not in scope here and every value below is either a global
+   --dsw-alias-* token or a literal. */
+
+/* The shared modal card is 380px wide, which is right for a one-field prompt
+   and too narrow for this form: its folder line is a path the operator reads
+   back plus a button beside it.
+ *
+ * The card is reached from the FORM rather than from the card's own class,
+ * because that class is a hashed CSS-module name this plugin does not own —
+ * the :has() selector asks the structural question instead (the modal that
+ * contains this form), so an upstream class rename cannot silently un-widen
+ * the dialog. */
+.dsh-web-ui-new-project:has([data-wui='form']) {
+  width: min(520px, 100%);
+}
+
+[data-wui='form'] {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 100%;
+  min-width: 0;
+}
+
+/* The card takes the focus on open (so the dialog is keyboard-usable), which
+   must not draw a focus ring around the whole form. */
+[data-wui='form']:focus {
+  outline: none;
+}
+
+[data-wui='formField'] {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+[data-wui='formLabel'] {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--dsw-alias-label-secondary);
+}
+
+[data-wui='formHint'] {
+  font-size: 11.5px;
+  line-height: 16px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+/* The folder field is a chosen VALUE plus the control that changes it: the path
+   itself is a fact the operator reads back, not a string they may edit. */
+[data-wui='formPathRow'] {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+[data-wui='formPath'] {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 9px;
+  border: 1px dashed var(--dsw-alias-border-l2);
+  border-radius: 8px;
+  font-family: var(--dsw-font-markdown-code-block-font-family, ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 20px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+  color: var(--dsw-alias-label-secondary);
+}
+
+[data-wui='formPath'][data-empty='true'] {
+  border-style: dashed;
+  font-family: inherit;
+  color: var(--dsw-alias-label-dimmed);
+}
+
+[data-wui='formError'] {
+  padding: 7px 9px;
+  border: 1px solid var(--dsw-alias-state-error-primary);
+  border-radius: 8px;
+  background: var(--dsw-alias-interactive-bg-hover-danger);
+  font-size: 12px;
+  line-height: 17px;
+  word-break: break-word;
+  color: var(--dsw-alias-label-primary);
+}
+
+/* A fieldset reset: the browser's default border and padding are what make a
+   native group look unlike the rest of these fields. */
+[data-wui='formFieldset'] {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+
+[data-wui='formRadios'] {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 7px;
+}
+
+/* Each answer is a chip the whole of which is the hit target (the label wraps
+   the input), so the radio dot and the word are one control. */
+[data-wui='formRadio'] {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 10px 6px 8px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: border-color 120ms ease, background-color 120ms ease, color 120ms ease;
+}
+
+[data-wui='formRadio']:hover {
+  border-color: var(--dsw-alias-border-l3);
+  color: var(--dsw-alias-label-primary);
+}
+
+[data-wui='formRadio'][data-checked='true'] {
+  border-color: var(--dsh-web-ui-accent);
+  background: var(--dsh-web-ui-accent-soft);
+  color: var(--dsh-web-ui-accent);
+}
+
+[data-wui='formRadio'] input {
+  margin: 0;
+  accent-color: var(--dsh-web-ui-accent);
+}
+
+[data-wui='formRadio']:has(input:focus-visible) {
+  outline: 2px solid var(--dsh-web-ui-accent);
+  outline-offset: 1px;
+}
+
+[data-wui='formRadioLabel'] {
+  white-space: nowrap;
+}
+
+[data-wui='formSelect'] {
+  width: 100%;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+[data-wui='formSelect']:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+[data-wui='formSelect']:focus-visible {
+  outline: none;
+  border-color: var(--dsh-web-ui-accent);
+}
+
+/* The card row's own states: loading, and the two ways there is nothing to
+   pick. This is where the still-open product-card seam shows itself, so it is a
+   sentence rather than an error icon. */
+[data-wui='formCardNote'] {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 7px 9px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 8px;
+  background: rgba(127, 127, 127, 0.06);
+  font-size: 11.5px;
+  line-height: 16px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+[data-wui='formCardNote'][data-tone='error'] {
+  border-color: var(--dsw-alias-state-error-primary);
+  background: var(--dsw-alias-interactive-bg-hover-danger);
+  color: var(--dsw-alias-label-primary);
+}
+
+[data-wui='formCardNoteText'] {
+  min-width: 0;
+  word-break: break-word;
 }
 
 

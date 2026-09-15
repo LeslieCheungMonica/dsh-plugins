@@ -1,5 +1,5 @@
 /**
- * The panel's read face over the host's Feishu routes.
+ * The panel's read face over the host's Feishu routes and the project record.
  *
  * This module is deliberately dumb: it fetches three paths, validates only the
  * shape it depends on, and turns every outcome into either a value or a
@@ -17,6 +17,7 @@
  *
  * @module dsh-web-ui/client/larkapi
  */
+import type { ProductCard, ProductCardResult } from './productCards.ts'
 
 /** The signed-in Feishu user, as the host reported it. */
 export interface LarkUser {
@@ -91,7 +92,7 @@ export type LarkResult<T> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly error: LarkError }
 
-/** Path prefix of the host's Feishu routes. */
+/** Path prefix of the host's Feishu routes and project record. */
 const PREFIX = '/dsh-web-ui/lark'
 
 /**
@@ -151,15 +152,23 @@ function toSpace(raw: unknown): LarkSpace | null {
  * Fetch one route and decode its envelope.
  * @param path - the path below the prefix, with its query string.
  * @param decode - how to build the value from the success body.
+ * @param init - the request's method and body, for a mutating route.
  * @returns the decoded value or a renderable error.
  */
 async function read<T>(
   path: string,
   decode: (body: Record<string, unknown>) => T,
+  init?: RequestInit,
 ): Promise<LarkResult<T>> {
   let response: Response
   try {
-    response = await fetch(`${PREFIX}${path}`, { headers: { accept: 'application/json' } })
+    response = await fetch(`${PREFIX}${path}`, {
+      ...init,
+      headers: {
+        accept: 'application/json',
+        ...(init?.body === undefined ? {} : { 'content-type': 'application/json' }),
+      },
+    })
   } catch (reason) {
     return {
       ok: false,
@@ -284,4 +293,142 @@ const FEISHU_ORIGIN = 'https://feishu.cn'
  */
 export function wikiUrl(node: LarkNode): string {
   return `${FEISHU_ORIGIN}/wiki/${node.nodeToken}`
+}
+
+/** The folder the host created for a project. */
+export interface ProjectFolderResult {
+  /** The folder's name — the project's name, as the archive shows it. */
+  readonly name: string
+  /** The new folder's token, usable for uploads and links. */
+  readonly folderToken: string
+  /** Shareable URL; empty when Feishu reported none. */
+  readonly url: string
+}
+
+/**
+ * Create the project's folder inside this deployment's Feishu folder.
+ *
+ * Called after a project is created, as a side effect of its own: it never
+ * decides whether the project exists, and its failure is reported rather than
+ * thrown at the project flow.
+ *
+ * `name` is the PROJECT's name — what the operator typed into the New Project
+ * form — and it becomes the folder's name. `path` travels too, so the host can
+ * fall back to the directory's last segment when no name is given; the host
+ * validates `name` as a name (a plain segment, never a path) and owns the parent
+ * folder, so this call cannot address a folder outside the archive.
+ *
+ * The host CREATES here rather than looking first, so a project whose folder is
+ * already there gets a second, same-named folder. That is this deployment's
+ * decision, not an accident: see `createFolder` in `src/host/lark.ts`.
+ * @param input - the project's directory and the project's name.
+ * @returns the created folder, or a renderable error.
+ */
+export function createProjectFolder(input: {
+  path: string
+  name?: string | undefined
+}): Promise<LarkResult<ProjectFolderResult>> {
+  const name = input.name?.trim() ?? ''
+  return read('/folder', (body) => ({
+    name: str(body, 'name'),
+    folderToken: str(body, 'folderToken'),
+    url: str(body, 'url'),
+  }), {
+    method: 'POST',
+    // A blank name is omitted rather than sent empty: the host then derives it
+    // from the path's last segment, which is exactly what a blank field means.
+    body: JSON.stringify(name === '' ? { path: input.path } : { path: input.path, name }),
+  })
+}
+
+/** One project's recorded facts, as the host stores them. */
+export interface ProjectRecord {
+  /** The project's name as it was last submitted. */
+  readonly name: string
+  /** The workspace directory: the record's key. */
+  readonly path: string
+  /** `new` | `existing` | `unsure`. */
+  readonly background: string
+  /** Chosen product card id; empty unless `background` is `existing`. */
+  readonly productCardId: string
+  /** Epoch ms of the last write. */
+  readonly updatedAt: number
+}
+
+/**
+ * Read one project's record.
+ *
+ * `path` is the key, because it is the only identifier the browser has (see
+ * `src/host/projects.ts` for why the path rather than a workspace id).
+ * @param path - the project's workspace directory.
+ * @returns the stored record (null when the project has none), or an error.
+ */
+export function readProjectRecord(path: string): Promise<LarkResult<ProjectRecord | null>> {
+  const params = new URLSearchParams({ path })
+  return read(`/project?${params.toString()}`, body => toRecord(body['project']))
+}
+
+/**
+ * Read this deployment's product cards.
+ *
+ * Its own route rather than part of a project's record: the CREATE form needs the
+ * catalogue before any project path exists.
+ * @returns the catalogue, or a renderable error.
+ */
+export function readProductCards(): Promise<LarkResult<ProductCardResult>> {
+  return read('/cards', (body): ProductCardResult => {
+    const rows = body['cards']
+    if (!Array.isArray(rows)) return { ok: true, cards: [] }
+    const cards: ProductCard[] = []
+    for (const row of rows) {
+      const id = str(row, 'id')
+      const name = str(row, 'name')
+      if (id === '' || name === '') continue
+      const detail = str(row, 'detail')
+      cards.push(detail === '' ? { id, name } : { id, name, detail })
+    }
+    return { ok: true, cards }
+  }).then((result): LarkResult<ProductCardResult> => result.ok
+    // A malformed catalogue arrives as the route's error envelope; the form shows
+    // that reason in place of the picker rather than an empty list.
+    ? result
+    : { ok: true, value: { ok: false, reason: 'failed', message: result.error.message } })
+}
+
+/**
+ * Narrow one raw record.
+ * @param raw - the wire record.
+ * @returns the record, or null when there is none.
+ */
+function toRecord(raw: unknown): ProjectRecord | null {
+  if (typeof raw !== 'object' || raw === null) return null
+  const updatedAt = (raw as Record<string, unknown>)['updatedAt']
+  return {
+    name: str(raw, 'name'),
+    path: str(raw, 'path'),
+    background: str(raw, 'background') || 'unsure',
+    productCardId: str(raw, 'productCardId'),
+    updatedAt: typeof updatedAt === 'number' ? updatedAt : 0,
+  }
+}
+
+/**
+ * Record one project's facts.
+ *
+ * The NAME is written here AND applied to the workspace by the caller: this
+ * plugin's store is a sidecar (see `src/host/projects.ts`), so the registry
+ * remains the authority for the title and this call keeps the copy in step.
+ * @param input - the fields to store.
+ * @returns the stored record, or a renderable error.
+ */
+export function writeProjectRecord(input: {
+  path: string
+  name: string
+  background: string
+  productCardId: string
+}): Promise<LarkResult<ProjectRecord | null>> {
+  return read('/project', body => toRecord(body['project']), {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
 }
