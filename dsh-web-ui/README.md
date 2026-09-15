@@ -15,6 +15,10 @@ the shell:
   `lark-cli` user, their personal knowledge base (`个人知识库` / `my_library`),
   and its directories and documents, one lazy level at a time (see
   [The Feishu document panel](#the-feishu-document-panel));
+- a **Git button sits in the session header's right-hand utilities** and opens a
+  right-hand drawer for the current session's project: branches, changes, commit
+  history, and a journal of every git command the drawer ran (see
+  [The git drawer](#the-git-drawer));
 - the shipped **settings panel and brand** keep rendering — inside this plugin's
   column, unchanged;
 - the plugin appears as `web-ui` in **Settings → Plugins → Plugin list**.
@@ -54,6 +58,88 @@ to own those dialogs).
 
 `project` is this plugin's word for a DSH **workspace**: a host-registered
 directory whose sessions share its path.
+
+## The git drawer
+
+A **Git** button in the session header's right-aligned utility group opens a
+drawer over the right edge of the page. It is about the **current session's
+project**: the repository is resolved from the workspace that accounts for the
+open session, so switching sessions switches repositories without a picker.
+
+The drawer floats over the app and is click-through outside its own box: it is a
+side panel, not a modal, so it stays open while you read or type in the session
+behind it. `Esc` or the ✕ closes it.
+
+| Tab | Answers |
+|---|---|
+| **分支 / Branches** | the current branch as a card (upstream, ahead/behind, tip commit), every local branch with its tracking state, and the remote-tracking roster behind a disclosure |
+| **改动 / Changes** | the commit box, then conflicts / staged / working-tree / untracked buckets, then the stash stack — with an in-place diff per row |
+| **历史 / History** | the last 20–200 commits; opening one reads its patch and per-file line counts on demand |
+| **操作记录 / Journal** | every command this drawer ran, with git's exit status, duration, and combined output |
+
+Branch row menus carry the verbs that apply to that row: switch, merge into the
+current branch, rebase the current branch onto it, rename, delete, push, create a
+tag at it, copy the name. The current branch's own menu correctly omits
+switch/merge/rebase/delete, because none of them apply to it.
+
+Everything that leaves the working tree changed asks first, in a dialog that
+names the exact branch, path, or stash (`确认删除分支「feature/x」？`). The quick
+row at the top is `Fetch`, `Pull`, `Push` (which adds `--set-upstream` when the
+branch has none), and a **More** menu with `pull --rebase`, `fetch --prune`,
+`push --tags`, `tag`, and *abort* when a merge, rebase, cherry-pick, or revert is
+in progress — the in-progress operation is detected from the git directory and
+announced in a strip above the tabs.
+
+### Host half (`src/host/git.ts`, `src/host/git-routes.ts`)
+
+A browser cannot run `git`, so the drawer only ever asks questions:
+
+| Route | Answers |
+|---|---|
+| `GET /dsh-web-ui/git/overview` | repository identity (root, git dir, in-progress operation), HEAD (`branch`, `upstream`, `ahead`, `behind`), change counts, remotes, stash and tag totals |
+| `GET /dsh-web-ui/git/branches` | every local and remote-tracking branch, with upstream, ahead/behind, `gone`, tip commit and tip date |
+| `GET /dsh-web-ui/git/log?limit=&ref=` | one page of commit history (`1`–`200`) |
+| `GET /dsh-web-ui/git/commit?sha=` | one commit's metadata, `--numstat` per-file counts, and its patch |
+| `GET /dsh-web-ui/git/changes` | every changed path with both status letters, the stash stack, and the action in flight |
+| `GET /dsh-web-ui/git/diff?file=&staged=&ref=` | one path's unified diff (refused with a reason for an untracked path) |
+| `GET /dsh-web-ui/git/records` | this plugin's journal for that repository |
+| `POST /dsh-web-ui/git/action` | one mutation, selected by `action` and parameterised by `args` |
+
+Four rules shape the host half, and each one is load-bearing:
+
+1. **No shell, ever.** Every command is a `spawn('git', argv)` with an array
+   built on the host, and every path travels after `--`. The drawer sends a
+   directory, a branch name, and a message; a shell string built from those would
+   be a remote-code-execution surface, and an argv array is not.
+2. **Names are validated by git, not by a regex here.** A branch name goes
+   through `git check-ref-format --branch`, a revision through
+   `git rev-parse --verify`, and a tag through `git check-ref-format
+   refs/tags/…`, because git's rules are the only correct ones. Anything
+   starting with `-` is refused everywhere, which is how an argument becomes an
+   option.
+3. **A domain failure is a value, not a status code.** "Not a repository", "the
+   merge conflicted", and "your branch is behind" come back as HTTP 200 with
+   `{ ok: false, error }`, because they are *content* the drawer renders where
+   the button was pressed. A 500 stays reserved for a bug in this plugin.
+4. **Every mutation is journalled**, in a bounded per-repository ring held by the
+   service instance (not module state, so a reloaded plugin does not inherit the
+   previous process's claims about what *it* ran).
+
+Reads are briefly cached (2 s) so opening the drawer costs one `git status`, not
+one per tab; a settled mutation invalidates the whole cache for its repository,
+so a reader never sees the tree it just changed.
+
+### Requirements and limits
+
+- `git` must be on the host's PATH; the `git` plugin suite below is *not*
+  required — the drawer shells out to the same binary directly.
+- Authentication is whatever the `git` CLI already has. Commands run with
+  `GIT_TERMINAL_PROMPT=0`, so a fetch needing credentials **fails with git's own
+  message** instead of holding the request open.
+- The drawer shows **no** blame, interactive rebase, conflict resolution editor,
+  or submodule support. A conflict is surfaced as a bucket plus an *abort*
+  action; resolving it is the operator's job in an editor.
+- The journal is in memory: restarting `dsh web` clears it.
 
 ## The Feishu document panel
 
@@ -219,13 +305,38 @@ needs `dsh web` restarted before the new code is live.
 
 ## Verifying
 
-Two smoke tests drive the real GUI with Playwright (dev-only; symlinked into
-`node_modules` from a checkout, since it is not a dependency of the plugin):
-
 ```sh
+node scripts/smoke-git.mjs                            # the git drawer: routes + DOM, no GUI needed
 CHROME=<chromium> node scripts/smoke.mjs              # structure, rail, plugin list
 CHROME=<chromium> node scripts/smoke-new-project.mjs  # New Project flow, host mocked at the wire
 ```
+
+`smoke-git.mjs` needs no running GUI and **no login**: it is the only test here
+that runs unattended. It creates a scratch repository under `$TMPDIR`, then walks
+both boundaries of the git drawer —
+
+1. **host** — every route over a real socket: statuses, envelopes, method guards,
+   the malformed-request arm, the body cap, and the refusals that matter (an
+   option-shaped `ref`, a path escaping the work tree, a branch name git
+   rejects, a non-hex commit id). It asserts the argv git actually received by
+   reading back the journal, and that a *refused* action is not journalled at all;
+2. **browser** — the BUILT `lib/client.js`, loaded through the shell's own
+   registration protocol, applied against a stub client context, and rendered
+   into a real DOM (`jsdom`). Clicks are dispatched at real nodes: stage →
+   unstage → commit → read the commit back in history → read the command back in
+   the journal → create a branch through the drawer's own prompt, plus the
+   not-a-repository answer.
+
+The shipped UI primitives are the one stub (their node builds import CSS modules
+Node cannot load — the shell answers them from a browser module table instead).
+The stub renders real buttons, a real checkbox, and a real menu, so every click
+lands on this plugin's own control.
+
+`jsdom` is dev-only and symlinked into `node_modules` from a checkout, like
+`playwright`, since neither is a dependency of the plugin. `react`, `react-dom`,
+and `@types/react-dom` are symlinked for the same reason: the bundle keeps them
+external (`require()` from the shell's module table), so nothing here declares
+them, but the typecheck and the DOM test both need them present.
 
 `smoke.mjs` asserts the takeover, that the shipped seats still render inside the
 column, the row order (project row above New Session), **that switching project
@@ -269,6 +380,11 @@ back afterwards).
 | The project-scoped session list | `src/client/SessionList.tsx` |
 | The Feishu document panel | `src/client/LarkDocsPanel.tsx` (+ `src/client/larkapi.ts`) |
 | The Feishu read routes | `src/host/routes.ts` (+ the `lark-cli` adapter, `src/host/lark.ts`) |
+| The git drawer | `src/client/GitPanel.tsx` (chrome), `GitBranches.tsx`, `GitChanges.tsx`, `GitHistory.tsx`, `GitRecords.tsx`, `src/client/gitapi.ts` |
+| The git header button | `src/client/GitAction.tsx` (+ its registration in `src/client/index.tsx`) |
+| The git write/serve half | `src/host/git.ts` (argv building, parsing, journal), `src/host/git-routes.ts` |
+| The git wire contract (both halves) | `src/shared/gitwire.ts` |
+| Which verbs the drawer offers | `buildAction()` in `src/host/git.ts`, and the per-row menus in `GitBranches.tsx` |
 | Which knowledge base opens by default | `PERSONAL_SPACE_ID` in `src/client/larkapi.ts`; the host alias is `PERSONAL_LIBRARY` in `src/host/lark.ts` |
 | Rename / delete dialogs | `src/client/TextPromptDialog.tsx`, `src/client/ConfirmDialog.tsx` |
 | Fallback folder browser | `src/client/BrowseFoldersDialog.tsx` |
@@ -310,6 +426,46 @@ another package's surface — reach it through the semantic `--dsw-alias-*` /
 `--dsw-specific-*` tokens only (that is what the `html body` overrides do, and
 the extra type selector is what wins against ui-theme's own `body` rule).
 
+## The dsh-git plugin suite
+
+This deployment also installs [dsh-git-plugins](https://github.com/sakthiveltofficial/dsh-git-plugins),
+the model-facing git capability: 8 typed agent tools (`git_repo`, `git_inspect`,
+`git_pr`, `git_issues`, `git_release`, `git_security`, `git_ci`, `git_memory`)
+over local git and five hosted platforms.
+
+```sh
+dsh plugin --profile web add github:sakthiveltofficial/dsh-git-plugins
+```
+
+It is a **bundle**: the patch it carries inserts its own Loader rows, so
+`dsh plugin add` also appends `dsh-git-plugins` to the profile's
+`dsh.profile.bundles`, and the whole set composes on the next `dsh web` start.
+Verify with:
+
+```sh
+dsh --profile web --dump-config | grep -i git
+```
+
+Two operational notes from this machine, both worth knowing before the next
+install:
+
+- `dsh plugin` forwards to whatever `pnpm` is first on PATH. The profile's
+  `node_modules` was linked by pnpm 10 (store `v10`), so a pnpm 11 forwarder
+  stops with `ERR_PNPM_UNEXPECTED_STORE` before installing anything. Prefix the
+  command with the matching pnpm, e.g.
+  `PATH=/opt/homebrew/bin:$PATH dsh plugin --profile web add …`, or the install
+  never runs.
+- Platform tokens are credential *references*, not secrets: `GITHUB_TOKEN`,
+  `GITLAB_TOKEN`, `BITBUCKET_APP_PASSWORD`, `AZURE_DEVOPS_PAT`, `GITEA_TOKEN`.
+  With a reference unset, reads of public repositories still work and writes
+  fail loud with `GIT_AUTH_FAILED`.
+
+The two capabilities are independent by design. The agent tools go through
+`@dsh-git/local` with approval and sandbox policy; the drawer in this plugin
+shells out to the same `git` binary itself, validates every name through git,
+and answers a browser. Installing either one without the other leaves the other
+working.
+
 ## Known limitations
 
 - **The browsing region no longer hosts the shipped browser.** It is split in
@@ -319,6 +475,15 @@ the extra type selector is what wins against ui-theme's own `body` rule).
   the shipped browser back, delete the `ctx.slots.inject('sidebar.workspaces', …)`
   block in `src/client/index.tsx` — the shipped registration is still on the
   ledger and renders again immediately.
+- **The git drawer needs the host half live.** Everything under `src/client/**`
+  is served fresh on a page reload, but `src/host/git.ts` and
+  `src/host/git-routes.ts` are imported once per process: adding or changing a
+  route needs `dsh web` restarted. Until then the drawer opens and answers *"the
+  git routes are not mounted on this host — rebuild the plugin and restart `dsh
+  web`"*, which is the honest state rather than an empty branch list.
+- **The git drawer cannot resolve conflicts.** Conflicts are surfaced as a
+  bucket, with an *abort* action for the operation that produced them; there is
+  no merge editor, no interactive rebase, and no submodule support.
 - **The Feishu panel is only as available as `lark-cli`.** It reads the
   operator's own login: no signed-in user, no installed binary, or a host that
   cannot reach Feishu (a TLS-inspecting proxy or a disconnected VPN) is rendered

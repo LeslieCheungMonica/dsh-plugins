@@ -28,7 +28,8 @@
     "watch": "tsdown --watch",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "smoke": "node scripts/smoke.mjs",
-    "smoke:new-project": "node scripts/smoke-new-project.mjs"
+    "smoke:new-project": "node scripts/smoke-new-project.mjs",
+    "smoke:git": "node scripts/smoke-git.mjs"
   },
   "devDependencies": {
     "tsdown": "^0.22.2",

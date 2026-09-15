@@ -1089,6 +1089,871 @@ const SHELL = `
   color: var(--dsw-alias-label-dimmed);
 }
 
+/* ── git drawer ──────────────────────────────────────────────────────── */
+
+/* The header trigger. It matches the shipped session-log capsule in height and
+   weight so the utility row reads as one group rather than as two plugins. */
+[data-wui='gitHeaderButton'] {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+[data-wui='gitHeaderButton']:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+
+[data-wui='gitHeaderButton']:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+[data-wui='gitHeaderButton'][aria-expanded='true'] {
+  background: var(--dsw-alias-interactive-bg-active);
+  color: var(--dsw-alias-label-primary);
+}
+
+[data-wui='gitHeaderLabel'] {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+/* A click-through positioning layer: the drawer floats over the app without
+   blocking it, and without dismissing on an outside click. */
+[data-wui='gitLayer'] {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  justify-content: flex-end;
+  pointer-events: none;
+}
+
+[data-wui='gitDrawer'] {
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  width: min(420px, 92vw);
+  height: 100%;
+  min-height: 0;
+  border-left: 1px solid var(--dsw-alias-border-l1);
+  background: var(--dsw-alias-bg-layer-1);
+  box-shadow: -12px 0 32px rgba(0, 0, 0, 0.16);
+  color: var(--dsw-alias-label-primary);
+  font-size: 12.5px;
+  animation: wui-git-in 160ms ease-out;
+}
+
+@keyframes wui-git-in {
+  from { transform: translateX(24px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+[data-wui='gitHeader'] {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--dsw-alias-border-l1);
+}
+
+[data-wui='gitMark'] {
+  display: inline-flex;
+  color: var(--dsh-web-ui-accent);
+}
+
+[data-wui='gitHeaderText'] {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+[data-wui='gitRepoName'] {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+[data-wui='gitBranchLine'] {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+[data-wui='gitBranchChip'] {
+  flex: none;
+  max-width: 190px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary-bluish);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+[data-wui='gitBranchChip'][data-detached='true'] {
+  color: var(--dsw-alias-state-warn-label);
+}
+
+[data-wui='gitTrack'] {
+  flex: none;
+  padding: 1px 5px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+[data-wui='gitTrack'][data-tone='ahead'] {
+  background: var(--dsw-alias-state-success-tertiary);
+  color: var(--dsw-alias-state-success-secondary);
+}
+
+[data-wui='gitTrack'][data-tone='behind'] {
+  background: var(--dsw-alias-state-warn-tertiary);
+  color: var(--dsw-alias-state-warn-label);
+}
+
+[data-wui='gitTrack'][data-tone='warn'] {
+  background: var(--dsw-alias-state-warn-tertiary);
+  color: var(--dsw-alias-state-warn-label);
+}
+
+[data-wui='gitTrack'][data-tone='muted'] {
+  max-width: 160px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-tertiary);
+}
+
+[data-wui='gitTrackRow'] {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+[data-wui='gitQuick'] {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--dsw-alias-border-l1);
+}
+
+[data-wui='gitQuickButton'] {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+[data-wui='gitQuickButton']:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+
+[data-wui='gitQuickButton']:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+[data-wui='gitQuick'] [data-wui='iconButton'] {
+  flex: none;
+  width: 26px;
+  height: 26px;
+}
+
+[data-wui='gitTabs'] {
+  flex: none;
+  display: flex;
+  gap: 2px;
+  padding: 6px 12px 0;
+  border-bottom: 1px solid var(--dsw-alias-border-l1);
+}
+
+[data-wui='gitTab'] {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 9px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+[data-wui='gitTab']:hover {
+  color: var(--dsw-alias-label-primary);
+}
+
+[data-wui='gitTab'][data-active='true'] {
+  border-bottom-color: var(--dsh-web-ui-accent);
+  color: var(--dsw-alias-label-primary);
+  font-weight: 600;
+}
+
+[data-wui='gitCount'] {
+  min-width: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--dsh-web-ui-accent);
+  color: var(--dsh-web-ui-accent-label);
+  font-size: 10px;
+  line-height: 15px;
+  text-align: center;
+}
+
+[data-wui='gitBody'] {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+[data-wui='gitTabHost'],
+[data-wui='gitTabPane'] {
+  min-height: 0;
+}
+
+[data-wui='gitTabPane'][data-hidden='true'] {
+  display: none;
+}
+
+[data-wui='gitSection'] {
+  display: flex;
+  flex-direction: column;
+  padding: 8px 12px 4px;
+  gap: 6px;
+}
+
+[data-wui='gitSectionHead'] {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+[data-wui='gitSectionHead'] > span:first-child {
+  flex: 1;
+  min-width: 0;
+}
+
+[data-wui='gitSectionTitle'] {
+  flex: 1;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+[data-wui='gitDisclosure'] {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+[data-wui='gitDisclosure']:hover {
+  color: var(--dsw-alias-label-primary);
+}
+
+/* The current-branch card: the one entry whose actions are not "move here". */
+[data-wui='gitCard'] {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 9px 10px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-2);
+}
+
+[data-wui='gitCardHead'] {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+[data-wui='gitCardLabel'] {
+  flex: none;
+  font-size: 11px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+[data-wui='gitBranchName'] {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-weight: 600;
+}
+
+[data-wui='gitCardMeta'] {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+[data-wui='gitCardSubject'] {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 11.5px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+[data-wui='gitRows'] {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+[data-wui='gitRow'] {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  border-radius: 6px;
+}
+
+[data-wui='gitRow']:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+[data-wui='gitRow'][data-current='true'] {
+  background: var(--dsw-alias-interactive-bg-hover-accent);
+}
+
+[data-wui='gitRow'][data-tone='error'] [data-wui='gitRowName'] {
+  color: var(--dsw-alias-state-error-primary);
+}
+
+[data-wui='gitRowMain'] {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 5px 6px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+[data-wui='gitRowMain']:disabled {
+  cursor: default;
+}
+
+[data-wui='gitRowMain'][data-static='true'] {
+  cursor: default;
+}
+
+[data-wui='gitRowTitle'] {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+[data-wui='gitRowMeta'] {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--dsw-alias-label-dimmed);
+}
+
+[data-wui='gitRowName'] {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-weight: 500;
+}
+
+[data-wui='gitRowName'][data-muted='true'] {
+  color: var(--dsw-alias-label-secondary);
+}
+
+[data-wui='gitRowName'][data-code='true'] {
+  font-family: var(--dsw-font-markdown-code-block-font-family, ui-monospace, monospace);
+  font-size: 11px;
+}
+
+[data-wui='gitRowSubject'] {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+[data-wui='gitRowSubject'][data-tone='error'] {
+  color: var(--dsw-alias-state-error-primary);
+}
+
+[data-wui='gitRowTime'] {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+[data-wui='gitRowToggle'] {
+  display: inline-flex;
+  flex: none;
+  color: var(--dsw-alias-label-dimmed);
+}
+
+[data-wui='gitBranchDot'] {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--dsw-alias-border-l3);
+}
+
+[data-wui='gitBranchDot'][data-current='true'] {
+  background: var(--dsh-web-ui-accent);
+}
+
+[data-wui='gitSha'],
+[data-wui='gitStashRef'] {
+  flex: none;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: var(--dsw-alias-markdown-inline-code);
+  color: var(--dsw-alias-label-secondary);
+  font-family: var(--dsw-font-markdown-code-block-font-family, ui-monospace, monospace);
+  font-size: 10.5px;
+}
+
+[data-wui='gitRefChip'] {
+  flex: none;
+  max-width: 150px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  padding: 0 5px;
+  border-radius: 999px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 10px;
+}
+
+[data-wui='gitRowActions'] {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-right: 4px;
+}
+
+[data-wui='gitRowAction'] {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  cursor: pointer;
+}
+
+[data-wui='gitRowAction']:hover {
+  background: var(--dsw-alias-interactive-bg-hover-solid);
+  color: var(--dsw-alias-label-primary);
+}
+
+[data-wui='gitTinyAction'] {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 7px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+[data-wui='gitTinyAction']:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover-solid);
+  color: var(--dsw-alias-label-primary);
+}
+
+[data-wui='gitTinyAction']:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+[data-wui='gitTinyAction'][data-tone='danger']:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover-danger);
+  color: var(--dsw-alias-state-error-primary);
+}
+
+[data-wui='gitPrimaryButton'] {
+  height: 28px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--dsh-web-ui-accent);
+  color: var(--dsh-web-ui-accent-label);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+[data-wui='gitPrimaryButton']:hover:not(:disabled) {
+  background: var(--dsh-web-ui-accent-hover);
+}
+
+[data-wui='gitPrimaryButton']:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+[data-wui='gitStatusChipHost'] {
+  flex: none;
+}
+
+[data-wui='gitStatusChip'] {
+  flex: none;
+  padding: 0 4px;
+  border-radius: 4px;
+  font-family: var(--dsw-font-markdown-code-block-font-family, ui-monospace, monospace);
+  font-size: 10.5px;
+  font-weight: 700;
+  white-space: pre;
+}
+
+[data-wui='gitStatusChip'][data-side='staged'] {
+  background: var(--dsw-alias-state-success-tertiary);
+  color: var(--dsw-alias-state-success-secondary);
+}
+
+[data-wui='gitStatusChip'][data-side='unstaged'] {
+  background: var(--dsw-alias-state-warn-tertiary);
+  color: var(--dsw-alias-state-warn-label);
+}
+
+[data-wui='gitStatusChip'][data-side='untracked'] {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-tertiary);
+}
+
+[data-wui='gitStatusChip'][data-side='conflict'] {
+  background: var(--dsw-alias-state-error-secondary);
+  color: var(--dsw-alias-label-primary-foreground);
+}
+
+[data-wui='gitAlert'] {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 12px 0;
+  padding: 7px 9px;
+  border-radius: 8px;
+  font-size: 11.5px;
+  background: var(--dsw-alias-state-warn-tertiary);
+  color: var(--dsw-alias-state-warn-label);
+}
+
+[data-wui='gitAlert'][data-tone='error'] {
+  background: var(--dsw-alias-state-error-secondary);
+  color: var(--dsw-alias-label-primary-foreground);
+}
+
+[data-wui='gitAlert'] > span {
+  flex: 1;
+  min-width: 0;
+}
+
+[data-wui='gitAlert'] [data-wui='gitTinyAction'] {
+  flex: none;
+  color: inherit;
+  border-color: currentColor;
+}
+
+[data-wui='gitNote'] {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 6px;
+  font-size: 11.5px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+[data-wui='gitNote'][data-tone='error'] {
+  color: var(--dsw-alias-state-error-primary);
+}
+
+[data-wui='gitEmpty'] {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 34px 20px;
+  text-align: center;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+[data-wui='gitEmpty'][data-tone='error'] {
+  color: var(--dsw-alias-state-error-primary);
+}
+
+[data-wui='gitEmptyTitle'] {
+  font-size: 12.5px;
+  word-break: break-word;
+}
+
+[data-wui='gitEmptyHint'] {
+  font-size: 11.5px;
+  color: var(--dsw-alias-label-dimmed);
+}
+
+[data-wui='gitEmpty'] [data-wui='gitQuickButton'] {
+  flex: none;
+}
+
+[data-wui='gitCommitBox'] {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-2);
+}
+
+[data-wui='gitCommitInput'] {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  padding: 6px 8px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 6px;
+  background: var(--dsw-alias-bg-base);
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 12.5px;
+}
+
+[data-wui='gitCommitInput']:focus {
+  outline: none;
+  border-color: var(--dsh-web-ui-accent);
+}
+
+[data-wui='gitCommitAll'] {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+}
+
+[data-wui='gitCommitActions'] {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+[data-wui='gitStashHead'] {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+[data-wui='gitStashInput'] {
+  flex: 1;
+  min-width: 0;
+  height: 24px;
+  padding: 0 7px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 5px;
+  background: var(--dsw-alias-bg-base);
+  color: var(--dsw-alias-label-primary);
+  font-size: 11.5px;
+}
+
+[data-wui='gitStashInput']:focus {
+  outline: none;
+  border-color: var(--dsh-web-ui-accent);
+}
+
+[data-wui='gitPatch'] {
+  flex-basis: 100%;
+  padding: 0 6px 8px;
+}
+
+[data-wui='gitPatchText'] {
+  max-height: 320px;
+  overflow: auto;
+  margin: 0;
+  padding: 8px;
+  border-radius: 6px;
+  background: var(--dsw-alias-markdown-code-block);
+  color: var(--dsw-alias-label-secondary);
+  font-family: var(--dsw-font-markdown-code-block-font-family, ui-monospace, monospace);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre;
+  tab-size: 2;
+}
+
+[data-wui='gitCommitFiles'] {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 0 6px;
+  font-size: 11px;
+  color: var(--dsw-alias-label-dimmed);
+}
+
+[data-wui='gitNumstat'] {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+[data-wui='gitNumstat'] [data-wui='gitRowName'] {
+  flex: 1;
+}
+
+[data-wui='gitAdd'] {
+  flex: none;
+  color: var(--dsw-alias-state-success-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+[data-wui='gitDel'] {
+  flex: none;
+  min-width: 26px;
+  color: var(--dsw-alias-state-error-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+[data-wui='gitSelect'] {
+  flex: none;
+  height: 22px;
+  padding: 0 4px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+[data-wui='gitFooter'] {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 6px 12px;
+  border-top: 1px solid var(--dsw-alias-border-l1);
+  background: var(--dsw-alias-bg-layer-2);
+  font-size: 11px;
+  color: var(--dsw-alias-label-dimmed);
+}
+
+[data-wui='gitFooterBusy'] {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  animation: wui-git-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes wui-git-pulse {
+  50% { opacity: 0.55; }
+}
+
+[data-wui='gitFooterStatus'] {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  color: var(--dsw-alias-state-success-primary);
+}
+
+[data-wui='gitFooterStatus'][data-tone='error'] {
+  color: var(--dsw-alias-state-error-primary);
+}
+
+[data-wui='gitFooterText'] {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--dsw-alias-label-secondary);
+}
+
+[data-wui='gitFooterIdle'] {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+
 `
 
 /** The complete stylesheet this plugin injects into `document.head`. */
