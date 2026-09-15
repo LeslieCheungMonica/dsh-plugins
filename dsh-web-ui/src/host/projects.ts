@@ -9,12 +9,14 @@
  *
  * ## Why a file, and why keyed by path
  *
- * The store is deliberately not a storage-domain unit: this plugin persists four
- * fields for a handful of projects, and a plain document is something an operator
- * can read, hand-edit and back up without knowing DSH's storage internals. The
- * file lives beside the harness's own storages (`~/.dsh/storages/`), and
- * `DSH_WEB_UI_PROJECTS_FILE` points it somewhere else — which is also what the
- * tests use, so no test touches the operator's real records.
+ * The store is deliberately not a storage-domain unit: this plugin persists a
+ * handful of fields for a handful of projects — the name, the two product
+ * answers, and the Feishu folder the project owns — and a plain document is
+ * something an operator can read, hand-edit and back up without knowing DSH's
+ * storage internals. The file lives beside the harness's own storages
+ * (`~/.dsh/storages/`), and `DSH_WEB_UI_PROJECTS_FILE` points it somewhere else
+ * — which is also what the tests use, so no test touches the operator's real
+ * records.
  *
  * The key is the workspace PATH rather than its id: the path is what the
  * operator recognizes, what survives a registry rebuild, and what the form
@@ -49,6 +51,19 @@ export interface ProjectRecord {
   readonly background: ProductBackground
   /** Chosen product card id; `''` unless `background` is `existing`. */
   readonly productCardId: string
+  /**
+   * The project's folder in this deployment's Feishu archive — the one created
+   * when the project was created — or `''` when none has been established yet.
+   *
+   * It is recorded HERE because it is the only handle that survives: the folder
+   * is created by a side effect the browser cannot see, and nothing else in DSH
+   * remembers what Feishu made. A project created before this field existed (or
+   * whose create failed) has none, and `GET /folder` is what adopts the folder
+   * that is already there.
+   */
+  readonly larkFolderToken: string
+  /** The folder's Feishu URL, recorded beside its token so the panel can link it. */
+  readonly larkFolderUrl: string
   /** Epoch ms of the last write, for a tie-break and for support. */
   readonly updatedAt: number
 }
@@ -126,6 +141,11 @@ function toRecord(raw: unknown, path: string): ProjectRecord | undefined {
     path,
     background: asBackground(record['background']),
     productCardId: typeof record['productCardId'] === 'string' ? record['productCardId'] : '',
+    // Absent in every record written before projects had a Feishu folder, which
+    // is `''` and not a repair: "no folder recorded yet" is the true state of
+    // such a record, and `GET /folder` is what resolves it.
+    larkFolderToken: typeof record['larkFolderToken'] === 'string' ? record['larkFolderToken'] : '',
+    larkFolderUrl: typeof record['larkFolderUrl'] === 'string' ? record['larkFolderUrl'] : '',
     updatedAt: typeof record['updatedAt'] === 'number' ? record['updatedAt'] : 0,
   }
 }
@@ -139,16 +159,42 @@ export interface ProjectStore {
    */
   get: (path: string) => Promise<ProjectRecord | undefined>
   /**
-   * Insert or replace one project's record.
+   * Insert or replace one project's FORM facts: the name and the two product
+   * answers.
+   *
+   * The Feishu folder is deliberately not this call's business. It is written by
+   * {@link ProjectStore.setLarkFolder} — the create route and the adopt route —
+   * and it is PRESERVED here even though this signature does not carry it: the
+   * edit form writes these four fields and nothing else, so a record that lost
+   * its folder token on every rename would make the panel forget a folder that
+   * still exists in Feishu. Losing a folder is not a state an operator can
+   * repair from the UI, so the store refuses to produce it.
    *
    * A reader never sees a half-written document: the write goes to a temporary
    * file in the same directory and is moved into place, so a crash mid-write
    * leaves the previous records intact (a rename is atomic within one
    * filesystem, which is why the temporary file is a SIBLING).
-   * @param record - the fields to store; `updatedAt` is stamped here.
+   * @param record - the form's fields; `updatedAt` is stamped here.
    * @returns the stored record.
    */
-  put: (record: Omit<ProjectRecord, 'updatedAt'>) => Promise<ProjectRecord>
+  put: (record: Omit<ProjectRecord, 'updatedAt' | 'larkFolderToken' | 'larkFolderUrl'>) => Promise<ProjectRecord>
+  /**
+   * Record the project's Feishu folder, or adopt one for it.
+   *
+   * The name travels with it so a project that has no record at all still gets
+   * one: a record whose only facts are "this path, this name, and this folder"
+   * is more useful than an adopted folder nothing can show, and `unsure` is the
+   * honest answer for a product background nobody was asked about.
+   * @param input - the project's path, the folder, and the name to use when the
+   * project has no record yet.
+   * @returns the stored record.
+   */
+  setLarkFolder: (input: {
+    path: string
+    name: string
+    folderToken: string
+    url: string
+  }) => Promise<ProjectRecord>
   /** Read every record. */
   all: () => Promise<readonly ProjectRecord[]>
 }
@@ -213,7 +259,31 @@ export function createProjectStore(): ProjectStore {
     all: async () => Object.values(await load()),
     put: async (input) => {
       const records = await load()
-      const record: ProjectRecord = { ...input, updatedAt: Date.now() }
+      const previous = records[input.path]
+      const record: ProjectRecord = {
+        ...input,
+        // See `ProjectStore.put`: the folder outlives the form that does not
+        // carry it.
+        larkFolderToken: previous?.larkFolderToken ?? '',
+        larkFolderUrl: previous?.larkFolderUrl ?? '',
+        updatedAt: Date.now(),
+      }
+      records[input.path] = record
+      await save(records)
+      return record
+    },
+    setLarkFolder: async (input) => {
+      const records = await load()
+      const previous = records[input.path]
+      const record: ProjectRecord = {
+        name: previous?.name ?? input.name,
+        path: input.path,
+        background: previous?.background ?? 'unsure',
+        productCardId: previous?.productCardId ?? '',
+        larkFolderToken: input.folderToken,
+        larkFolderUrl: input.url,
+        updatedAt: Date.now(),
+      }
       records[input.path] = record
       await save(records)
       return record

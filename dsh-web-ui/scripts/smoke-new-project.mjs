@@ -126,9 +126,24 @@ await page.route('**/dsh-web-ui/lark/project**', async (route) => {
 // it — HTTP 200 with an `ok: false` envelope — because a Feishu failure is
 // content the column renders, not a transport failure. This script flips the
 // envelope mid-test to prove BOTH the success strip and the failure strip.
+//
+// The path is matched with a trailing `**` and split by METHOD, because the
+// panel's own "which folder is this project's" read is a GET on the same path:
+// without the split, a create answer would be served to a resolve read and the
+// panel would sit in its "no folder yet" state for the whole run.
 const folderCalls = []
 let folderAnswer = { ok: true, name: 'smoke', folderToken: 'fldsmoke0001', url: 'https://example.feishu.cn/drive/folder/fldsmoke0001' }
-await page.route('**/dsh-web-ui/lark/folder', async (route) => {
+await page.route('**/dsh-web-ui/lark/folder**', async (route) => {
+  if (route.request().method() === 'GET') {
+    // A project with no folder yet, which is the state this smoke test drives:
+    // the panel offers the create action and reads no listing.
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ ok: true, source: 'missing', name: 'smoke', folder: null, candidates: [] }),
+    })
+    return
+  }
   const body = JSON.parse(route.request().postData() ?? '{}')
   folderCalls.push({ method: route.request().method(), path: body.path, name: body.name })
   await route.fulfill({
@@ -296,12 +311,15 @@ check('a typed project name is applied as the workspace title',
   JSON.stringify(calls.filter(c => c.method.startsWith('workspace.')).map(c => [c.method, c.payload.title])))
 
 // The column follows the new project: its session list re-scopes, and it holds
-// only that project's sessions.
+// only that project's sessions. The scope travels in `data-project` and not in a
+// header row — the list has none, and the project's name is the dropdown directly
+// above it — so that attribute is what this reads.
 const scoped = await page.evaluate(() => {
   const list = document.querySelector('[data-wui="sessionList"]')
   return {
     project: list?.getAttribute('data-project') ?? null,
-    header: document.querySelector('[data-wui="sessionHeaderTitle"]')?.textContent ?? null,
+    count: document.querySelector('[data-wui="sessionCount"]')?.textContent ?? null,
+    titleGone: document.querySelector('[data-wui="sessionHeaderTitle"]') === null,
     rows: [...document.querySelectorAll('[data-wui="sessionRow"]')].map(r => r.getAttribute('data-session')),
   }
 })

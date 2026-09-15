@@ -211,39 +211,52 @@ function baseNameOf(path: string): string {
 }
 
 /**
- * Turn one Feishu failure into a line an operator can act on.
+ * The fix for one Feishu failure, in the operator's own words.
  *
  * The codes are the host adapter's own vocabulary (`src/host/lark.ts`), and each
  * one names a different fix: a re-login with a scope, a permission request, a
- * terminal login, a network, or an install. The adapter's own message is appended
- * rather than replaced — the point of the hint is to make that detail actionable,
- * not to hide it.
+ * terminal login, a network, or an install. It is exported because two surfaces
+ * render these failures — the New Project flow's strip and the folder panel's
+ * error block — and an operator who learns what `scope-missing` means in one of
+ * them should not have to learn it again in the other.
+ * @param error - the failure the host reported.
+ * @param t - namespace-bound translate.
+ * @returns the hint, or null when this code has no specific fix.
+ */
+export function feishuFailureHint(error: LarkError, t: T): string | null {
+  const scope = /scope\(s\):\s*([A-Za-z0-9_.:]+)/.exec(error.message)?.[1]
+  switch (error.code) {
+    case 'scope-missing':
+      return t('feishu.hint.scope', { scope: scope ?? 'space:document:retrieve' })
+    case 'forbidden':
+      return t('feishu.hint.forbidden')
+    case 'not-logged-in':
+      return t('feishu.hint.login')
+    case 'cli-missing':
+      return t('feishu.hint.missing')
+    case 'cli-network':
+    case 'cli-timeout':
+      return t('feishu.hint.network')
+    default:
+      return null
+  }
+}
+
+/**
+ * Turn one Feishu failure into a line an operator can act on.
+ *
+ * The adapter's own message is appended to rather than replaced by the hint: the
+ * point of the hint is to make that detail actionable, not to hide it.
  * @param error - the failure the host reported.
  * @param t - namespace-bound translate.
  * @returns the sentence to show.
  */
 export function folderFailureText(error: LarkError, t: T): string {
-  const scope = /scope\(s\):\s*([A-Za-z0-9_.:]+)/.exec(error.message)?.[1]
-  const hint = ((): string | null => {
-    switch (error.code) {
-      case 'scope-missing':
-        return t('feishu.hint.scope', { scope: scope ?? 'space:document:retrieve' })
-      case 'forbidden':
-        return t('feishu.hint.forbidden')
-      case 'not-logged-in':
-        return t('feishu.hint.login')
-      case 'cli-missing':
-        return t('feishu.hint.missing')
-      case 'cli-network':
-      case 'cli-timeout':
-        return t('feishu.hint.network')
-      default:
-        return null
-    }
-  })()
+  const hint = feishuFailureHint(error, t)
   const head = `${t('feishu.folder.failed')}: ${error.message}`
   return hint === null ? head : `${head} ${hint}`
 }
+
 
 /**
  * Drive the New Project flow over the runtime's public workspace services.

@@ -1,10 +1,21 @@
 /**
  * The panel's read face over the host's Feishu routes and the project record.
  *
- * This module is deliberately dumb: it fetches three paths, validates only the
+ * This module is deliberately dumb: it fetches five paths, validates only the
  * shape it depends on, and turns every outcome into either a value or a
  * *renderable* error. It holds no state and knows nothing about the tree the
  * component builds from these answers.
+ *
+ * Its subject is ONE folder — the Feishu folder this deployment created for a
+ * project when the project was created — and the two questions the panel asks
+ * about it are split between two calls, in the order they matter:
+ *
+ * 1. `readProjectFolder` — *which folder is this project's?* The host answers
+ *    from the project's record, adopts an existing folder by name when the
+ *    record has none, and reports "none" or "several" as content rather than as
+ *    a failure (see `GET /folder` in `src/host/routes.ts`).
+ * 2. `readLarkFiles` — *what is in it?* One page per call, and one call per
+ *    subdirectory the operator expands.
  *
  * Two failure modes deserve their own handling rather than a generic throw:
  *
@@ -13,7 +24,9 @@
  *   the webserver is not composed at all). "No answer" and "answered a page" are
  *   different operator problems, so they are different messages.
  * - The route answers `{ ok: false }`. The host already phrased that for a
- *   human (a missing CLI, an expired login), so the message is passed through.
+ *   human (a missing CLI, an expired login, a login that lacks a scope), so the
+ *   message is passed through with its code intact — the code is what lets the
+ *   panel add the fix for that particular failure.
  *
  * @module dsh-web-ui/client/larkapi
  */
@@ -31,38 +44,30 @@ export interface LarkUser {
   readonly avatarUrl: string
 }
 
-/** One wiki space. */
-export interface LarkSpace {
-  /** Space id, or `my_library` for the personal knowledge base. */
-  readonly spaceId: string
-  /** Space name; empty when Feishu did not report one. */
+/** One entry in a Feishu folder: a document, an uploaded file, or a subfolder. */
+export interface LarkEntry {
+  /** The entry's own token; what a Feishu link addresses. */
+  readonly token: string
+  /**
+   * The token to LIST when this entry is a directory, `''` when it is a leaf.
+   *
+   * A plain folder lists by its own token; a shortcut into a folder lists by its
+   * target's. The host resolves both into this one field, so "has children" and
+   * "what do I expand" are the same question here.
+   */
+  readonly expandToken: string
+  /** `folder` | `docx` | `sheet` | `bitable` | `mindnote` | `slides` | `file` | `shortcut` | … */
+  readonly type: string
+  /** Title; empty for a handful of entries Feishu reports without one. */
   readonly name: string
-  /** `my_library` | `team` | … */
-  readonly spaceType: string
-  /** `private` | `public` | … */
-  readonly visibility: string
+  /** Browser link, built by the host; `''` only when Feishu's type has no layout. */
+  readonly url: string
 }
 
-/** One wiki node. */
-export interface LarkNode {
-  /** Node token: the identity used to expand it and to build its URL. */
-  readonly nodeToken: string
-  /** Underlying document token. */
-  readonly objToken: string
-  /** `docx` | `sheet` | `bitable` | `slides` | `mindnote` | `file` | … */
-  readonly objType: string
-  /** `origin` | `shortcut`. */
-  readonly nodeType: string
-  /** Title; empty for a handful of nodes Feishu reports without one. */
-  readonly title: string
-  /** Whether this node has children — whether it behaves as a directory. */
-  readonly hasChild: boolean
-}
-
-/** One page of a node level. */
+/** One page of one folder's children. */
 export interface LarkLevel {
-  /** The nodes of this page. */
-  readonly nodes: readonly LarkNode[]
+  /** The entries of this page. */
+  readonly nodes: readonly LarkEntry[]
   /** Whether another page exists. */
   readonly hasMore: boolean
   /** Token for that page; null when there is none. */
@@ -75,13 +80,43 @@ export interface LarkState {
   readonly loggedIn: boolean
   /** The signed-in user; null when nobody is signed in. */
   readonly user: LarkUser | null
-  /** The personal knowledge base; null when it did not resolve. */
-  readonly space: LarkSpace | null
+}
+
+/** One Feishu folder. */
+export interface LarkFolder {
+  /** The folder's name — the project's name, as the operator typed it. */
+  readonly name: string
+  /** The folder's token: what lists its contents and what an attach records. */
+  readonly folderToken: string
+  /** Shareable link; `''` when neither Feishu nor the host had one. */
+  readonly url: string
+}
+
+/**
+ * Where the folder the panel is about came from.
+ *
+ * `record` and `adopted` are both "here it is" — the difference is whether this
+ * project already knew its folder or the host had to recognize it by name — and
+ * the panel reads them the same way. `missing` and `ambiguous` are the two
+ * states the operator has to resolve, and they are states rather than errors
+ * because neither is a Feishu failure: no folder of that name exists yet, or
+ * several do and only the operator knows which one is theirs.
+ */
+export type FolderSource = 'record' | 'adopted' | 'missing' | 'ambiguous'
+
+/** What the host answered about a project's folder. */
+export interface FolderResolution {
+  /** The folder to browse; null when none is resolved. */
+  readonly folder: LarkFolder | null
+  /** How the folder was resolved, or why it was not. */
+  readonly source: FolderSource
+  /** Same-named folders the host found; offered when `source` is `ambiguous`. */
+  readonly candidates: readonly LarkFolder[]
 }
 
 /** A failure the panel can render. */
 export interface LarkError {
-  /** Machine-readable kind (`cli-missing`, `not-logged-in`, `unreachable`, …). */
+  /** Machine-readable kind (`cli-missing`, `not-logged-in`, `scope-missing`, …). */
   readonly code: string
   /** One line a human can act on. */
   readonly message: string
@@ -96,13 +131,6 @@ export type LarkResult<T> =
 const PREFIX = '/dsh-web-ui/lark'
 
 /**
- * The personal knowledge base. Feishu exposes it as the per-user alias
- * `my_library` rather than a numeric space id, and never returns it from the
- * space list — so this is also the panel's default view.
- */
-export const PERSONAL_SPACE_ID = 'my_library'
-
-/**
  * Read one string field of an unknown record.
  * @param raw - the record, when it is one.
  * @param key - the field name.
@@ -115,36 +143,30 @@ function str(raw: unknown, key: string): string {
 }
 
 /**
- * Normalize a node record, dropping anything without a token.
+ * Normalize a folder record, dropping anything without a token.
  * @param raw - the wire record.
- * @returns the node, or null.
+ * @returns the folder, or null.
  */
-function toNode(raw: unknown): LarkNode | null {
-  const nodeToken = str(raw, 'nodeToken')
-  if (nodeToken === '') return null
-  return {
-    nodeToken,
-    objToken: str(raw, 'objToken'),
-    objType: str(raw, 'objType'),
-    nodeType: str(raw, 'nodeType'),
-    title: str(raw, 'title'),
-    hasChild: typeof raw === 'object' && raw !== null && (raw as Record<string, unknown>)['hasChild'] === true,
-  }
+function toFolder(raw: unknown): LarkFolder | null {
+  const folderToken = str(raw, 'folderToken')
+  if (folderToken === '') return null
+  return { name: str(raw, 'name'), folderToken, url: str(raw, 'url') }
 }
 
 /**
- * Normalize a space record, dropping anything without an id.
+ * Normalize one entry record, dropping anything without a token.
  * @param raw - the wire record.
- * @returns the space, or null.
+ * @returns the entry, or null.
  */
-function toSpace(raw: unknown): LarkSpace | null {
-  const spaceId = str(raw, 'spaceId')
-  if (spaceId === '') return null
+function toEntry(raw: unknown): LarkEntry | null {
+  const token = str(raw, 'token')
+  if (token === '') return null
   return {
-    spaceId,
+    token,
+    expandToken: str(raw, 'expandToken'),
+    type: str(raw, 'type'),
     name: str(raw, 'name'),
-    spaceType: str(raw, 'spaceType'),
-    visibility: str(raw, 'visibility'),
+    url: str(raw, 'url'),
   }
 }
 
@@ -211,15 +233,14 @@ async function read<T>(
 }
 
 /**
- * Read the signed-in user and the personal knowledge base.
+ * Read the signed-in user.
  * @param refresh - whether to bypass the host's cache.
  * @returns the header facts or a renderable error.
  */
 export function readLarkState(refresh = false): Promise<LarkResult<LarkState>> {
   return read(`/state${refresh ? '?refresh=1' : ''}`, (body) => ({
     loggedIn: body['loggedIn'] === true,
-    user: toSpaceUser(body['user']),
-    space: toSpace(body['space']),
+    user: toUser(body['user']),
   }))
 }
 
@@ -228,7 +249,7 @@ export function readLarkState(refresh = false): Promise<LarkResult<LarkState>> {
  * @param raw - the wire record.
  * @returns the user, or null when nobody is signed in.
  */
-function toSpaceUser(raw: unknown): LarkUser | null {
+function toUser(raw: unknown): LarkUser | null {
   if (typeof raw !== 'object' || raw === null) return null
   return {
     name: str(raw, 'name'),
@@ -239,42 +260,62 @@ function toSpaceUser(raw: unknown): LarkUser | null {
 }
 
 /**
- * Read the readable wiki spaces, personal knowledge base first.
- * @param refresh - whether to bypass the host's cache.
- * @returns the roster or a renderable error.
+ * Read which Feishu folder belongs to one project.
+ *
+ * `name` is the name the sidebar shows for the project. It travels with the
+ * request because the host's record is not the authority on it (see
+ * `src/host/projects.ts`), and it is what the host searches the archive for when
+ * the project has no folder recorded.
+ * @param input - the project's path, its name, and whether to drop host caches.
+ * @returns the resolution or a renderable error.
  */
-export function readLarkSpaces(refresh = false): Promise<LarkResult<readonly LarkSpace[]>> {
-  return read(`/spaces${refresh ? '?refresh=1' : ''}`, (body) => {
-    const rows = body['spaces']
-    if (!Array.isArray(rows)) return []
-    return rows.flatMap((row) => {
-      const space = toSpace(row)
-      return space === null ? [] : [space]
-    })
+export function readProjectFolder(input: {
+  path: string
+  name: string
+  refresh?: boolean | undefined
+}): Promise<LarkResult<FolderResolution>> {
+  const params = new URLSearchParams({ path: input.path })
+  if (input.name.trim() !== '') params.set('name', input.name.trim())
+  if (input.refresh === true) params.set('refresh', '1')
+  return read(`/folder?${params.toString()}`, (body) => {
+    const rows = body['candidates']
+    const source = str(body, 'source')
+    return {
+      folder: toFolder(body['folder']),
+      source: source === 'record' || source === 'adopted' || source === 'missing' || source === 'ambiguous'
+        ? source
+        : 'missing',
+      candidates: Array.isArray(rows)
+        ? rows.flatMap((row) => {
+          const folder = toFolder(row)
+          return folder === null ? [] : [folder]
+        })
+        : [],
+    }
   })
 }
 
 /**
- * Read one level of wiki nodes.
- * @param input - the space, the parent node (absent for the root), and a page token.
- * @returns the level or a renderable error.
+ * Read one page of one folder's children.
+ * @param input - the folder, the page to continue from, and whether to drop host caches.
+ * @returns the page or a renderable error.
  */
-export function readLarkNodes(input: {
-  spaceId: string
-  parentNodeToken?: string | undefined
+export function readLarkFiles(input: {
+  folderToken: string
   pageToken?: string | undefined
+  refresh?: boolean | undefined
 }): Promise<LarkResult<LarkLevel>> {
-  const params = new URLSearchParams({ space: input.spaceId })
-  if (input.parentNodeToken !== undefined) params.set('parent', input.parentNodeToken)
+  const params = new URLSearchParams({ folder: input.folderToken })
   if (input.pageToken !== undefined) params.set('pageToken', input.pageToken)
-  return read(`/nodes?${params.toString()}`, (body) => {
+  if (input.refresh === true) params.set('refresh', '1')
+  return read(`/files?${params.toString()}`, (body) => {
     const rows = body['nodes']
     const pageToken = body['pageToken']
     return {
       nodes: Array.isArray(rows)
         ? rows.flatMap((row) => {
-          const node = toNode(row)
-          return node === null ? [] : [node]
+          const entry = toEntry(row)
+          return entry === null ? [] : [entry]
         })
         : [],
       hasMore: body['hasMore'] === true,
@@ -283,51 +324,50 @@ export function readLarkNodes(input: {
   })
 }
 
-/** Feishu host of a wiki link: the brand-less form redirects to the tenant. */
-const FEISHU_ORIGIN = 'https://feishu.cn'
-
 /**
- * Build the shareable URL of a wiki node.
- * @param node - the node to link.
- * @returns the URL a browser can open (the user's own tenant resolves it).
- */
-export function wikiUrl(node: LarkNode): string {
-  return `${FEISHU_ORIGIN}/wiki/${node.nodeToken}`
-}
-
-/** The folder the host created for a project. */
-export interface ProjectFolderResult {
-  /** The folder's name — the project's name, as the archive shows it. */
-  readonly name: string
-  /** The new folder's token, usable for uploads and links. */
-  readonly folderToken: string
-  /** Shareable URL; empty when Feishu reported none. */
-  readonly url: string
-}
-
-/**
- * Create the project's folder inside this deployment's Feishu folder.
+ * Pull a Drive folder token out of what an operator pasted.
  *
- * Called after a project is created, as a side effect of its own: it never
- * decides whether the project exists, and its failure is reported rather than
- * thrown at the project flow.
+ * Feishu's own folder URL carries the token in its path
+ * (`https://<tenant>.feishu.cn/drive/folder/<token>`), and an operator who has
+ * the folder open in a browser has that URL and nothing else — so accepting it
+ * is the difference between "point this project at the folder it already has"
+ * and "create a second one". A bare token is accepted too, because the CLI's own
+ * output prints them.
+ * @param text - the pasted text.
+ * @returns the token, or `''` when the text holds none.
+ */
+export function folderTokenFromInput(text: string): string {
+  const trimmed = text.trim()
+  if (trimmed === '') return ''
+  const inUrl = /\/folder\/([A-Za-z0-9_-]{1,128})/.exec(trimmed)
+  if (inUrl !== null) return inUrl[1] ?? ''
+  return /^[A-Za-z0-9_-]{1,128}$/.test(trimmed) ? trimmed : ''
+}
+
+/**
+ * Create the project's folder inside this deployment's Feishu archive folder.
+ *
+ * Called after a project is created, as a side effect of its own, and from the
+ * panel when a project has no folder yet. It never decides whether the project
+ * exists, and its failure is reported rather than thrown at the caller.
  *
  * `name` is the PROJECT's name — what the operator typed into the New Project
  * form — and it becomes the folder's name. `path` travels too, so the host can
- * fall back to the directory's last segment when no name is given; the host
- * validates `name` as a name (a plain segment, never a path) and owns the parent
- * folder, so this call cannot address a folder outside the archive.
+ * fall back to the directory's last segment when no name is given, and so the
+ * host can RECORD the new folder onto the project, which is what lets the panel
+ * find it later without reading the archive.
  *
  * The host CREATES here rather than looking first, so a project whose folder is
  * already there gets a second, same-named folder. That is this deployment's
- * decision, not an accident: see `createFolder` in `src/host/lark.ts`.
+ * decision, not an accident: see `createFolder` in `src/host/lark.ts`. The
+ * panel's `readProjectFolder` is the looking half.
  * @param input - the project's directory and the project's name.
  * @returns the created folder, or a renderable error.
  */
 export function createProjectFolder(input: {
   path: string
   name?: string | undefined
-}): Promise<LarkResult<ProjectFolderResult>> {
+}): Promise<LarkResult<LarkFolder>> {
   const name = input.name?.trim() ?? ''
   return read('/folder', (body) => ({
     name: str(body, 'name'),
@@ -341,6 +381,39 @@ export function createProjectFolder(input: {
   })
 }
 
+/**
+ * Use one folder for one project.
+ *
+ * This is the panel's answer to an ambiguous adoption, and the way an operator
+ * points a project at a folder it already has. The host validates the token's
+ * shape and records it; it does NOT verify that the folder exists, because the
+ * listing that follows reports that in the panel's own words.
+ * @param input - the project, the folder to use, and an optional link for it.
+ * @returns the recorded folder, or a renderable error.
+ */
+export function attachProjectFolder(input: {
+  path: string
+  folderToken: string
+  name?: string | undefined
+  url?: string | undefined
+}): Promise<LarkResult<LarkFolder>> {
+  const name = input.name?.trim() ?? ''
+  const url = input.url?.trim() ?? ''
+  return read('/folder/attach', (body) => ({
+    name: str(body, 'name'),
+    folderToken: str(body, 'folderToken'),
+    url: str(body, 'url'),
+  }), {
+    method: 'POST',
+    body: JSON.stringify({
+      path: input.path,
+      folderToken: input.folderToken,
+      ...(name === '' ? {} : { name }),
+      ...(url === '' ? {} : { url }),
+    }),
+  })
+}
+
 /** One project's recorded facts, as the host stores them. */
 export interface ProjectRecord {
   /** The project's name as it was last submitted. */
@@ -351,6 +424,17 @@ export interface ProjectRecord {
   readonly background: string
   /** Chosen product card id; empty unless `background` is `existing`. */
   readonly productCardId: string
+  /**
+   * The project's folder in the Feishu archive, or `''` when none is recorded.
+   *
+   * The panel does not read this field directly — `readProjectFolder` answers
+   * with the folder the host resolved — but it is part of the record the host
+   * stores, and a caller that shows a project's stored facts sees the whole
+   * record rather than a selection of it.
+   */
+  readonly larkFolderToken: string
+  /** The folder's Feishu link, recorded beside its token. */
+  readonly larkFolderUrl: string
   /** Epoch ms of the last write. */
   readonly updatedAt: number
 }
@@ -408,6 +492,8 @@ function toRecord(raw: unknown): ProjectRecord | null {
     path: str(raw, 'path'),
     background: str(raw, 'background') || 'unsure',
     productCardId: str(raw, 'productCardId'),
+    larkFolderToken: str(raw, 'larkFolderToken'),
+    larkFolderUrl: str(raw, 'larkFolderUrl'),
     updatedAt: typeof updatedAt === 'number' ? updatedAt : 0,
   }
 }
@@ -417,7 +503,9 @@ function toRecord(raw: unknown): ProjectRecord | null {
  *
  * The NAME is written here AND applied to the workspace by the caller: this
  * plugin's store is a sidecar (see `src/host/projects.ts`), so the registry
- * remains the authority for the title and this call keeps the copy in step.
+ * remains the authority for the title and this call keeps the copy in step. The
+ * project's Feishu folder is NOT part of this call: the host keeps it, and the
+ * record's own write path preserves it (see `ProjectStore.put`).
  * @param input - the fields to store.
  * @returns the stored record, or a renderable error.
  */

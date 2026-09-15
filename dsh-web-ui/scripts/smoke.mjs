@@ -73,6 +73,7 @@ const state = await page.evaluate(() => {
   const list = q('[data-wui="sessionList"]')
   return {
     projectRow: rect('[data-wui="projectRow"]'),
+    stageTag: rect('[data-wui="stageTag"]'),
     newSession: rect('[data-wui="newSession"]'),
     newProject: q('[data-wui-accent="true"]') !== null,
     trigger: q('[data-wui="projectTrigger"]') !== null,
@@ -83,7 +84,10 @@ const state = await page.evaluate(() => {
     slotErrors: document.querySelectorAll('[data-slot-error]').length,
     conversation: q('[data-conversation-scroll]') !== null,
     listProject: list?.getAttribute('data-project') ?? null,
-    listHeader: q('[data-wui="sessionHeaderTitle"]')?.textContent ?? null,
+    listCount: q('[data-wui="sessionCount"]')?.textContent ?? null,
+    // The list used to name its project in a header row of its own; that row is
+    // gone, so its absence is what this reports.
+    listTitleGone: q('[data-wui="sessionHeaderTitle"]') === null,
     rows: [...document.querySelectorAll('[data-wui="sessionRow"]')].map(row => ({
       id: row.getAttribute('data-session'),
       project: list?.getAttribute('data-project') ?? null,
@@ -96,10 +100,14 @@ const state = await page.evaluate(() => {
 check('shipped brand seat renders in this column', state.brandSeat > 0, `children=${String(state.brandSeat)}`)
 check('the browsing region is this plugin\'s session list', state.listProject !== null,
   `list rows=${String(state.rows.length)}`)
+check('the session list opens with its search row, not a project header',
+  state.listCount !== null && state.listTitleGone,
+  `count="${String(state.listCount)}" projectHeader=${state.listTitleGone ? 'absent' : 'PRESENT'}`)
 check('shipped settings shell renders in this column', state.settingsSeat > 0, `children=${String(state.settingsSeat)}`)
-check('project row renders above the New Session button',
-  state.projectRow !== null && state.newSession !== null && state.projectRow.y < state.newSession.y,
-  `row.y=${String(state.projectRow?.y)} new.y=${String(state.newSession?.y)}`)
+check('project row renders above the FDE stage tag, which renders above New Session',
+  state.projectRow !== null && state.stageTag !== null && state.newSession !== null
+  && state.projectRow.y < state.stageTag.y && state.stageTag.y < state.newSession.y,
+  `row.y=${String(state.projectRow?.y)} stage.y=${String(state.stageTag?.y)} new.y=${String(state.newSession?.y)}`)
 check('New Project button renders', state.newProject)
 check('project dropdown trigger renders', state.trigger)
 check('no slot entry crashed', state.slotErrors === 0, `slotErrors=${String(state.slotErrors)}`)
@@ -111,7 +119,12 @@ const readList = () => page.evaluate(() => {
   const list = document.querySelector('[data-wui="sessionList"]')
   return {
     project: list?.getAttribute('data-project') ?? null,
-    header: document.querySelector('[data-wui="sessionHeaderTitle"]')?.textContent ?? null,
+    // The row that carried the project's name is gone, so the header is not read
+    // at all; the count rides the search row now, and the dropdown's own text is
+    // the project's name this list must NOT repeat.
+    count: document.querySelector('[data-wui="sessionCount"]')?.textContent ?? null,
+    titleGone: document.querySelector('[data-wui="sessionHeaderTitle"]') === null,
+    projectName: document.querySelector('[data-wui="projectTrigger"]')?.textContent ?? null,
     ids: [...document.querySelectorAll('[data-wui="sessionRow"]')].map(r => r.getAttribute('data-session')),
     empty: document.querySelector('[data-wui="sessionEmpty"]')?.textContent ?? null,
   }
@@ -136,7 +149,7 @@ if (projectRows.length >= 2) {
   const others = await page.$$('[role="menu"] button')
   for (const node of others) {
     const text = (await node.textContent())?.trim() ?? ''
-    if (text.includes('/') && !text.startsWith(before.header ?? '\u0000') && !/New project|Browse/.test(text)) {
+    if (text.includes('/') && !text.startsWith(before.projectName ?? '\u0000') && !/New project|Browse/.test(text)) {
       await node.click()
       switched = true
       break
@@ -155,11 +168,18 @@ if (projectRows.length >= 2) {
   const overlap = before.ids.filter(id => after.ids.includes(id))
   check('no session from the other project remains listed', overlap.length === 0,
     `overlap=${String(overlap.length)}`)
-  check('the list header follows the selection', after.header !== before.header,
-    `${String(before.header)} → ${String(after.header)}`)
 } else {
   check('switching project re-scopes the list (skipped: fewer than two projects)', true, 'only one project')
 }
+
+// The list does not name its project under the New Session button: the dropdown
+// above already does, and the header row that repeated it is gone. The count that
+// row used to hold now rides the search row, so the column keeps the fact and
+// loses only the row.
+const named = (before.projectName ?? '').trim()
+check('the session list has no header row naming the project',
+  before.titleGone && named !== '' && !(before.count ?? '').includes(named),
+  `titleGone=${String(before.titleGone)} count="${String(before.count)}" project="${named}"`)
 
 // The list's own search narrows within the project and says so when nothing
 // matches (the same empty block a project with no sessions uses).
@@ -226,6 +246,7 @@ await page.waitForTimeout(900)
 const rail = await page.evaluate(() => {
   const column = document.querySelector('[data-wui="column"]')
   const row = document.querySelector('[data-wui="projectRow"]')
+  const stageTag = document.querySelector('[data-wui="stageTag"]')
   const boxes = [...row.children].map(node => Math.round(node.getBoundingClientRect().x))
   return {
     railAttr: column.getAttribute('data-rail'),
@@ -234,10 +255,15 @@ const rail = await page.evaluate(() => {
     rowOverflow: row.scrollWidth - row.clientWidth,
     stacked: new Set(boxes).size === 1,
     railRegion: document.querySelector('[data-wui="sessionRail"]') !== null,
+    stageTag: stageTag === null ? null : Math.round(stageTag.getBoundingClientRect().width),
+    stageTagText: stageTag?.textContent ?? null,
   }
 })
 check('rail state engages on collapse', rail.railAttr === 'true' && rail.width < 80, `width=${String(rail.width)}`)
 check('rail controls stack inside the track', rail.stacked && rail.rowOverflow <= 3, `overflow=${String(rail.rowOverflow)}`)
+check('the rail keeps the stage tag as a square control carrying no words',
+  rail.stageTag === 36 && rail.stageTagText === '',
+  `width=${String(rail.stageTag)} text="${String(rail.stageTagText)}"`)
 check('collapsed column does not overflow horizontally', rail.columnOverflow <= 3, `overflow=${String(rail.columnOverflow)}`)
 check('the rail carries the region\'s own control', rail.railRegion)
 await page.click('[data-wui="iconButton"]')

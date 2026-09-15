@@ -203,8 +203,6 @@ export function SessionList(props: SessionListProps): ReactNode {
     })()
   }
 
-  const projectName = scope.selected?.title ?? t('project.none')
-
   // Rail: the column header already carries the project and New Session
   // controls, so the rail shows one control — expand the column — with a badge
   // for anything waiting or running inside it.
@@ -241,19 +239,29 @@ export function SessionList(props: SessionListProps): ReactNode {
 
   return (
     <div data-wui="sessionList" data-project={scope.selectedId ?? ''}>
-      <div data-wui="sessionHeader">
-        <span data-wui="sessionHeaderTitle" title={scope.selected?.path ?? ''}>{projectName}</span>
-        <span data-wui="sessionHeaderCount">{t('sessions.count', { n: rows.length })}</span>
-      </div>
+      {/* No header row. The list used to open with one that named the project —
+          which the dropdown directly above the New Session button already names,
+          so it was a second copy of one fact — and then with the same row
+          carrying the count alone, which cost a row of the column for a number.
+          The count now rides the SEARCH row instead, so the list starts with a
+          control the operator uses and gains back the row.
 
+          What the scope is, is still visible: `data-project` on this element
+          carries it, and the dropdown trigger keeps the project's PATH in its
+          tooltip and spells it out in its menu. */}
       <div data-wui="sessionSearch">
-        <Input
-          icon={<IconSearchOutline16 size={16} />}
-          value={query}
-          placeholder={t('sessions.search.placeholder')}
-          aria-label={t('sessions.search.placeholder')}
-          onChange={(event) => { setQuery(event.target.value) }}
-        />
+        <span data-wui="sessionSearchField">
+          <Input
+            icon={<IconSearchOutline16 size={16} />}
+            value={query}
+            placeholder={t('sessions.search.placeholder')}
+            aria-label={t('sessions.search.placeholder')}
+            onChange={(event) => { setQuery(event.target.value) }}
+          />
+        </span>
+        <span data-wui="sessionCount" title={scope.selected?.path ?? ''}>
+          {t('sessions.count', { n: rows.length })}
+        </span>
       </div>
 
       {error !== null && (

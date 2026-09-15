@@ -31,6 +31,8 @@ import { ConfirmDialog } from './ConfirmDialog.tsx'
 import { LarkDocsPanel } from './LarkDocsPanel.tsx'
 import { NewProjectDialog } from './NewProjectDialog.tsx'
 import { ProjectErrorStrip, ProjectFolderStrip, ProjectFolderToast, ProjectRow } from './ProjectRow.tsx'
+import { StageTag } from './StageTag.tsx'
+import { NO_PROJECT_SCOPE } from './stage.ts'
 import { useProjectFlow } from './projectFlow.ts'
 import { useProjectScope } from './project.ts'
 
@@ -241,6 +243,16 @@ export function Shell(props: ShellProps): ReactNode {
         </div>
       )}
 
+      {/* The FDE stage tag, directly above the New Session button it belongs
+          to: the stage describes the project this column is scoped to, and the
+          button is what starts its next piece of work. */}
+      <StageTag
+        scopeKey={currentId === undefined ? NO_PROJECT_SCOPE : String(currentId)}
+        scopeLabel={selected?.title}
+        rail={rail}
+        t={t}
+      />
+
       <Tooltip label={t('session.new.hint', { project: selected?.title ?? t('project.none') })} delayMs={500} disabled={wide}>
         <button
           type="button"
@@ -293,7 +305,16 @@ export function Shell(props: ShellProps): ReactNode {
               data-wui="regionBottom"
               style={{ flexGrow: 100 - split, flexBasis: 0 }}
             >
-              <LarkDocsPanel t={t} />
+              {/* The panel is about ONE project: the selected one, whose Feishu
+                  folder it shows. The two fields it needs — the path that keys
+                  the record, and the title its folder is named after — travel
+                  from the scope this column already resolved. */}
+              <LarkDocsPanel
+                t={t}
+                project={selected === undefined
+                  ? undefined
+                  : { path: selected.path, title: selected.title }}
+              />
             </div>
           </>
         )}

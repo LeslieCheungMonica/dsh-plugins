@@ -46,6 +46,19 @@ html body[data-ds-dark-theme] {
   --dsh-web-ui-accent-label: #0b0d12;
   --dsh-web-ui-accent-soft: rgba(90, 140, 246, 0.18);
 }
+
+/* The FDE flow's own green (see stage.ts). It is declared HERE, on the page
+   root, and not on the column like the other --dsh-web-ui-* values: the flow
+   panel is portaled to the page body (the column clips its own overflow, so
+   the panel cannot live inside it), and a custom property set on the column
+   would not reach it. The halo is a pair — on and off — because a keyframe
+   cannot interpolate to transparent: green's own transparent is used instead,
+   which is what keeps the pulse from fading through grey. */
+html body {
+  --dsh-web-ui-stage-on-solid: #ffffff;
+  --dsh-web-ui-stage-halo: rgba(34, 197, 94, 0.3);
+  --dsh-web-ui-stage-halo-off: rgba(34, 197, 94, 0);
+}
 `
 
 const SHELL = `
@@ -301,6 +314,344 @@ const SHELL = `
   padding: 0;
 }
 
+/* ── FDE stage tag ────────────────────────────────────────────────────────
+   The current stage of the selected project, between the project row and the
+   New Session button. It is a STATUS row rather than a second primary action:
+   it keeps the column's quiet surface (the accent fill below belongs to New
+   Session alone) and states where the project is twice — as a ring, and as
+   words. The flow panel it opens is portaled out of the column, so its rules
+   below use theme tokens only. */
+
+[data-wui='stageTag'] {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  margin: 0 2px var(--dsh-web-ui-gap);
+  padding: 0 8px;
+  box-sizing: border-box;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsh-web-ui-radius);
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font-size: 13px;
+  cursor: pointer;
+  overflow: hidden;
+  transition: background-color 120ms var(--ds-ease-in-out);
+}
+
+[data-wui='stageTag']:hover,
+[data-wui='stageTag'][data-open='true'] {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+[data-wui='stageTag']:focus-visible {
+  outline: 2px solid var(--dsh-web-ui-accent);
+  outline-offset: 1px;
+}
+
+/* The ring: the reached share of the flow is a green arc, the rest is the
+   hairline colour. Masked rather than layered, so it is a true ring over
+   whatever surface the tag sits on (the column's fill, or the hover fill).
+   The fill fractions are per-step rules below — an attribute, not an inline
+   custom property, so the value is inspectable in the DOM like every other
+   state this plugin renders. One sixth is the FIRST stage, not zero: sitting on
+   stage one is one step of six, done. */
+[data-wui='stageRing'] {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: conic-gradient(
+    var(--dsw-alias-state-success-primary) var(--wui-stage-fill, 16.667%),
+    var(--dsw-alias-border-l2) 0
+  );
+  -webkit-mask: radial-gradient(circle closest-side, transparent 72%, #000 76%);
+  mask: radial-gradient(circle closest-side, transparent 72%, #000 76%);
+}
+
+[data-wui='stageTag'][data-step='0'] [data-wui='stageRing'] { --wui-stage-fill: 16.667%; }
+[data-wui='stageTag'][data-step='1'] [data-wui='stageRing'] { --wui-stage-fill: 33.333%; }
+[data-wui='stageTag'][data-step='2'] [data-wui='stageRing'] { --wui-stage-fill: 50%; }
+[data-wui='stageTag'][data-step='3'] [data-wui='stageRing'] { --wui-stage-fill: 66.667%; }
+[data-wui='stageTag'][data-step='4'] [data-wui='stageRing'] { --wui-stage-fill: 83.333%; }
+[data-wui='stageTag'][data-step='5'] [data-wui='stageRing'] { --wui-stage-fill: 100%; }
+
+[data-wui='stageTagLabel'] {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-weight: 600;
+}
+
+[data-wui='stageTagCount'] {
+  flex: none;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+[data-wui='stageTagChevron'] {
+  flex: none;
+  display: inline-flex;
+  color: var(--dsw-alias-label-tertiary);
+  transition: transform 150ms var(--ds-ease-in-out);
+}
+
+[data-wui='stageTag'][data-open='true'] [data-wui='stageTagChevron'] {
+  transform: rotate(180deg);
+}
+
+/* In the rail there is no room for words: the tag becomes the ring alone, on
+   the same 36px grid as the project trigger and New Session beneath it. */
+[data-wui='column'][data-rail='true'] [data-wui='stageTag'] {
+  align-self: flex-start;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  margin: 0 0 12px;
+  justify-content: center;
+  border-color: transparent;
+}
+
+[data-wui='column'][data-rail='true'] [data-wui='stageTag'] [data-wui='stageRing'] {
+  width: 18px;
+  height: 18px;
+}
+
+/* ── FDE flow panel (portaled to the page body) ───────────────────────────
+   The flow, top to bottom in delivery order. The rail that ties the nodes
+   together is drawn by each row's own pseudo-elements, split around the node so
+   the line never runs UNDER a marker — that is what lets an unreached node stay
+   a hollow circle with the panel's surface showing through it. Adjacent rows
+   are flush, so the segments of two neighbours meet and read as one line. */
+
+[data-wui='stagePanel'] {
+  position: fixed;
+  z-index: 1100;
+  box-sizing: border-box;
+  width: 268px;
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
+  padding: 8px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 12px;
+  background: var(--dsw-specific-menu);
+  box-shadow: var(--dsw-shadow-lv3);
+  color: var(--dsw-alias-label-primary);
+  font-size: 13px;
+  /* Elevated surface: it takes the l2 elevation scrollbar tokens, like the
+     shared Menu's own card. */
+  --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);
+  --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);
+  animation: wui-stage-in 140ms var(--ds-ease-in-out);
+}
+
+/* The panel opens downward from the tag, so it arrives from just above. */
+@keyframes wui-stage-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+[data-wui='stagePanelHead'] {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 6px 2px;
+}
+
+[data-wui='stagePanelTitle'] {
+  font-weight: 600;
+}
+
+[data-wui='stagePanelCount'] {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+[data-wui='stagePanelScope'] {
+  padding: 0 6px 6px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+[data-wui='stageList'] {
+  /* --wui-stage-rail is where the connector line sits: the marker cell is
+     42px wide and holds a centred 18px node, so the node's centre — and the
+     line's, one pixel either side of it — is 21px in. */
+  --wui-stage-rail: 20px;
+
+  margin: 0;
+  padding: 4px 0 0;
+  border-top: 1px solid var(--dsw-alias-border-l2);
+  list-style: none;
+}
+
+[data-wui='stageRow'] {
+  position: relative;
+  border-radius: 8px;
+  transition: background-color 120ms var(--ds-ease-in-out);
+}
+
+[data-wui='stageRow']:not([data-state='current']):hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+[data-wui='stageRow']::before,
+[data-wui='stageRow']::after {
+  content: '';
+  position: absolute;
+  left: var(--wui-stage-rail);
+  width: 2px;
+  background: var(--dsw-alias-border-l2);
+  pointer-events: none;
+}
+
+/* Split around the node: from the row's top edge to 11px above its centre, and
+   from 11px below the centre to its bottom edge. 11 = the node's half (9) plus
+   the 2px of breathing room that keeps the line clear of a hollow marker. */
+[data-wui='stageRow']::before {
+  top: 0;
+  height: calc(50% - 11px);
+}
+
+[data-wui='stageRow']::after {
+  top: calc(50% + 11px);
+  bottom: 0;
+}
+
+/* No line above the first node or below the last one: the flow starts and ends
+   at a node, it does not run off the card. */
+[data-wui='stageRow']:first-child::before,
+[data-wui='stageRow']:last-child::after {
+  display: none;
+}
+
+/* The line behind the current node is green because the node above it is done;
+   the line below it is not, because the next node has not started. That one
+   asymmetry is the whole reason the states are read from the row. */
+[data-wui='stageRow'][data-state='done']::before,
+[data-wui='stageRow'][data-state='done']::after,
+[data-wui='stageRow'][data-state='current']::before {
+  background: var(--dsw-alias-state-success-primary);
+}
+
+[data-wui='stageRow'][data-state='current'] {
+  background: var(--dsw-alias-state-success-tertiary);
+}
+
+[data-wui='stageNodeButton'] {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;
+  padding: 0 8px 0 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+[data-wui='stageNodeButton']:focus-visible {
+  outline: 2px solid var(--dsh-web-ui-accent);
+  outline-offset: -2px;
+}
+
+/* The node's cell: its width is what the connector line above is measured
+   against --wui-stage-rail, so it is fixed rather than content-sized. */
+[data-wui='stageNodeCell'] {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+}
+
+/* 18px: big enough for the shipped 12px check outline to read as a glyph rather
+   than a hairline, and small enough that the marker stays a node in a list. */
+[data-wui='stageNode'] {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  box-sizing: border-box;
+  border-radius: 50%;
+}
+
+/* Reached: a green disc with a white check — this stage AND everything behind
+   it, the current one included (it is reached, and it is still running). */
+[data-wui='stageRow'][data-state='done'] [data-wui='stageNode'],
+[data-wui='stageRow'][data-state='current'] [data-wui='stageNode'] {
+  background: var(--dsw-alias-state-success-primary);
+  color: var(--dsh-web-ui-stage-on-solid);
+}
+
+/* Ahead: an empty circle, deliberately with no fill of its own — the line stops
+   short of it, so the panel's own surface is what shows through. */
+[data-wui='stageRow'][data-state='pending'] [data-wui='stageNode'] {
+  /* Lighter than the reached disc on purpose: an unreached node is a place in
+     the flow, not a piece of work that is under way. */
+  border: 1.5px solid var(--dsw-alias-border-l2);
+}
+
+/* Running: the node breathes. The halo starts at the node's own edge and fades
+   out at 7px, which is what makes "this one is live" readable at a glance
+   without motion you have to wait for. */
+[data-wui='stageRow'][data-state='current'] [data-wui='stageNode'] {
+  animation: wui-stage-pulse 1.9s var(--ds-ease-in-out) infinite;
+}
+
+@keyframes wui-stage-pulse {
+  0% { box-shadow: 0 0 0 0 var(--dsh-web-ui-stage-halo); }
+  60% { box-shadow: 0 0 0 7px var(--dsh-web-ui-stage-halo-off); }
+  100% { box-shadow: 0 0 0 7px var(--dsh-web-ui-stage-halo-off); }
+}
+
+[data-wui='stageLabel'] {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+[data-wui='stageStatus'] {
+  flex: none;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11px;
+}
+
+/* Ahead of the flow: grey words. Behind it: ordinary text, because finished
+   work is not dimmed — it is what the operator has. */
+[data-wui='stageRow'][data-state='pending'] [data-wui='stageLabel'],
+[data-wui='stageRow'][data-state='pending'] [data-wui='stageStatus'] {
+  color: var(--dsw-alias-label-dimmed);
+}
+
+[data-wui='stageRow'][data-state='current'] [data-wui='stageLabel'] {
+  font-weight: 600;
+}
+
+[data-wui='stageRow'][data-state='current'] [data-wui='stageStatus'] {
+  color: var(--dsw-alias-state-success-primary);
+  font-weight: 600;
+}
+
 /* ── new session ─────────────────────────────────────────────────────── */
 
 [data-wui='newSession'] {
@@ -496,36 +847,32 @@ const SHELL = `
   height: 100%;
 }
 
-[data-wui='sessionHeader'] {
-  flex: none;
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 0 6px 6px 4px;
-}
-
-[data-wui='sessionHeaderTitle'] {
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--dsw-alias-label-tertiary);
-}
-
-[data-wui='sessionHeaderCount'] {
-  flex: none;
-  font-size: 11px;
-  color: var(--dsw-alias-label-dimmed);
-}
-
+/* The session list's search row. It carries the count beside the field, which is
+   where the list's own header used to carry it: the header row is gone (the
+   project's name belongs to the dropdown above, and a row of the column is not
+   worth a number), so one row now holds the control the operator uses AND the
+   fact the count states. */
 [data-wui='sessionSearch'] {
   flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   padding: 0 4px 6px 0;
+}
+
+/* The field takes the room the count does not need. Wrapping the primitive keeps
+   this rule independent of its internals: the wrapper is what flex sizes. */
+[data-wui='sessionSearchField'] {
+  flex: 1;
+  min-width: 0;
+  display: block;
+}
+
+[data-wui='sessionCount'] {
+  flex: none;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--dsw-alias-label-dimmed);
 }
 
 [data-wui='sessionScroll'] {
@@ -929,13 +1276,17 @@ const SHELL = `
   color: var(--dsw-alias-label-secondary);
 }
 
-[data-wui='larkSpaceTrigger'] {
+/* The project's folder, in the identity strip: who is reading, and which folder
+   they are reading. A link rather than a picker — the panel's subject is fixed
+   to the selected project — so it keeps the trigger's shape and drops the
+   chevron's room. */
+[data-wui='larkFolderLink'] {
   flex: 1;
   min-width: 0;
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 2px;
+  gap: 3px;
   padding: 2px 4px;
   border: none;
   border-radius: 6px;
@@ -946,12 +1297,12 @@ const SHELL = `
   cursor: pointer;
 }
 
-[data-wui='larkSpaceTrigger']:hover {
+[data-wui='larkFolderLink']:hover {
   background: var(--dsw-alias-interactive-bg-hover);
   color: var(--dsw-alias-label-secondary);
 }
 
-[data-wui='larkSpaceName'] {
+[data-wui='larkFolderName'] {
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
@@ -1024,11 +1375,16 @@ const SHELL = `
   border: 1px solid var(--dsw-alias-border-l1);
 }
 
+[data-wui='larkBadge'][data-type='doc'] { color: #2f6bd8; border-color: rgba(47, 107, 216, 0.35); }
 [data-wui='larkBadge'][data-type='docx'] { color: #2f6bd8; border-color: rgba(47, 107, 216, 0.35); }
 [data-wui='larkBadge'][data-type='sheet'] { color: #1f8a4c; border-color: rgba(31, 138, 76, 0.35); }
 [data-wui='larkBadge'][data-type='bitable'] { color: #7a4bd0; border-color: rgba(122, 75, 208, 0.35); }
 [data-wui='larkBadge'][data-type='slides'] { color: #c4711a; border-color: rgba(196, 113, 26, 0.35); }
 [data-wui='larkBadge'][data-type='mindnote'] { color: #1c8f8a; border-color: rgba(28, 143, 138, 0.35); }
+/* A folder is the one chip worth reading at a glance: it is the row that
+   expands, so it carries the directory's own colour rather than the neutral. */
+[data-wui='larkBadge'][data-type='folder'] { color: #b07d16; border-color: rgba(176, 125, 22, 0.4); }
+[data-wui='larkBadge'][data-type='shortcut'] { color: var(--dsw-alias-label-secondary); }
 
 [data-wui='larkNodeTitle'] {
   min-width: 0;
@@ -1082,6 +1438,20 @@ const SHELL = `
 
 [data-wui='larkNote'][data-tone='error'] {
   color: var(--dsw-alias-state-error-primary);
+  /* A failure's sentence, its fix, and its Retry are three long pieces of text:
+     in a column this narrow, wrapping beats truncating any of them. */
+  flex-wrap: wrap;
+}
+
+/* "This project has no folder" and "several folders could be it" are STATES, not
+   failures: they stack their sentence above the actions that answer them, and
+   they wrap rather than truncate, because the operator has to read them. */
+[data-wui='larkNote'][data-tone='empty'] {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 6px 4px;
+  line-height: 1.5;
 }
 
 [data-wui='larkNoteAction'] {
@@ -1099,6 +1469,88 @@ const SHELL = `
 [data-wui='larkNoteAction']:hover {
   border-color: var(--dsh-web-ui-accent);
   color: var(--dsh-web-ui-accent);
+}
+
+[data-wui='larkNoteAction'][disabled] {
+  opacity: 0.5;
+  cursor: default;
+}
+
+[data-wui='larkNoteAction'][disabled]:hover {
+  border-color: var(--dsw-alias-border-l1);
+  color: inherit;
+}
+
+/* The primary of a pair — creating the folder the project is supposed to have. */
+[data-wui='larkNoteAction'][data-primary='true'] {
+  border-color: var(--dsh-web-ui-accent);
+  color: var(--dsh-web-ui-accent);
+}
+
+[data-wui='larkNoteAction'][data-primary='true']:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+[data-wui='larkActions'] {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+/* The paste-a-link escape hatch: an operator who has the folder open in Feishu
+   has a URL and nothing else. */
+[data-wui='larkAttach'] {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+}
+
+[data-wui='larkInput'] {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 6px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 11px;
+}
+
+[data-wui='larkInput']:focus {
+  outline: none;
+  border-color: var(--dsh-web-ui-accent);
+}
+
+/* The candidates of an ambiguous adoption: one row per same-named folder. */
+[data-wui='larkCandidates'] {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+}
+
+[data-wui='larkCandidate'] {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px;
+  border-radius: 7px;
+}
+
+[data-wui='larkCandidate']:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+[data-wui='larkCandidateName'] {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--dsw-alias-label-primary);
 }
 
 [data-wui='larkError'] {

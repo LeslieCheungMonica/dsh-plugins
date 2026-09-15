@@ -12,8 +12,9 @@
  * 2. a project with no record yet answers `null`, not an invented one;
  * 3. a malformed document, an empty one and a missing one all degrade to "no
  *    records" — never to a refusal of the operator's next write;
- * 4. a write replaces the whole record and stamps it, and a bad request never
- *    reaches the file;
+ * 4. a write replaces the project's FORM facts and stamps it, a bad request never
+ *    reaches the file, and the Feishu folder the record also carries — which the
+ *    form knows nothing about — survives that write;
  * 5. the card catalogue: an empty deployment says "none configured", a broken one
  *    says so, and a duplicate id is refused rather than silently collapsed.
  *
@@ -136,7 +137,51 @@ check('a read without a path is refused',
 check('a refused request leaves the document untouched',
   await readFile(FILE, 'utf8') === before)
 
-// 5. Broken documents degrade to "no records", never to a refusal.
+// 5. The project's own Feishu FOLDER lives in this record too, and the property
+//    that matters is what happens to it when something ELSE writes the record:
+//    the edit form knows four fields and nothing about folders, so a rename must
+//    not make the panel forget a folder that still exists in Feishu.
+const attach = handlers.get('/dsh-web-ui/lark/folder/attach')
+const attached = await call(attach, {
+  method: 'POST',
+  url: '/dsh-web-ui/lark/folder/attach',
+  body: JSON.stringify({ path: '/work/alpha', folderToken: 'fldalpha', name: '订单中心' }),
+})
+const withFolder = await call(project, { url: '/dsh-web-ui/lark/project?path=%2Fwork%2Falpha' })
+check('attaching a folder records it on the project',
+  attached.status === 200
+  && withFolder.body.project?.larkFolderToken === 'fldalpha'
+  && withFolder.body.project?.larkFolderUrl === 'https://feishu.cn/drive/folder/fldalpha',
+  JSON.stringify(withFolder.body.project))
+
+await call(project, {
+  method: 'POST',
+  body: JSON.stringify({ path: '/work/alpha', name: '订单中心二期', background: 'existing', productCardId: 'card-acf' }),
+})
+const afterRename = await call(project, { url: '/dsh-web-ui/lark/project?path=%2Fwork%2Falpha' })
+check('a form write keeps the folder it does not carry',
+  afterRename.body.project?.name === '订单中心二期'
+  && afterRename.body.project?.larkFolderToken === 'fldalpha'
+  && afterRename.body.project?.larkFolderUrl === 'https://feishu.cn/drive/folder/fldalpha',
+  JSON.stringify(afterRename.body.project))
+
+// A record written before projects had a folder is not a broken record: "none
+// recorded yet" is its true state, and the resolve route is what looks for one.
+await writeFile(FILE, JSON.stringify({
+  version: 1,
+  projects: {
+    '/work/old': { path: '/work/old', name: '旧项目', background: 'new', productCardId: '', updatedAt: 1 },
+  },
+}))
+const legacy = await call(project, { url: '/dsh-web-ui/lark/project?path=%2Fwork%2Fold' })
+check('a record from before folders existed reads as "no folder", not as a failure',
+  legacy.status === 200
+  && legacy.body.project?.name === '旧项目'
+  && legacy.body.project?.larkFolderToken === ''
+  && legacy.body.project?.larkFolderUrl === '',
+  JSON.stringify(legacy.body.project))
+
+// 6. Broken documents degrade to "no records", never to a refusal.
 for (const [label, content] of [
   ['an empty document', ''],
   ['a truncated document', '{"version":1,"proj'],
@@ -156,7 +201,7 @@ check('the next write repairs a broken document',
   repaired.status === 200 && JSON.parse(await readFile(FILE, 'utf8')).projects['/work/alpha'].name === '修好',
   JSON.stringify(repaired.body).slice(0, 120))
 
-// 6. The card catalogue.
+// 7. The card catalogue.
 const emptyCatalogue = await call(cards, { url: '/dsh-web-ui/lark/cards' })
 check('an unconfigured deployment serves an EMPTY catalogue, not an error',
   emptyCatalogue.status === 200 && emptyCatalogue.body.ok === true && emptyCatalogue.body.cards.length === 0,

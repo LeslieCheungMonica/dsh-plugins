@@ -5,18 +5,23 @@ the shell:
 
 - the **sidebar column is this plugin's** — header, geometry, spacing, rail;
 - a **project dropdown** (`项目 / current project`) and a **New Project** button
-  sit directly above the New Session button;
+  sit at the head of the column, above the FDE stage tag and the New Session
+  button;
 - the session list below them shows **only the selected project's sessions** —
   no other project's sessions appear, and switching projects re-scopes it;
 - the New Session button starts its session **in the selected project**;
+- an **FDE stage tag** sits between the project row and that button, showing where
+  the project is in the delivery flow — and opens the flow itself, node by node,
+  when clicked (see [The FDE stage tag](#the-fde-stage-tag));
 - choosing a project's folder is the **New Project form** (`+` in the project
   row, or `新增项目…` in its menu): name the project, choose a local folder as
   its workspace, and say whether it is a new product, an existing one, or not
   decided yet — then the folder is registered as a DSH workspace and a session
   opens in it (see [The New Project form](#the-new-project-form));
-- the **lower half of the column is the Feishu document panel**: the signed-in
-  `lark-cli` user, their personal knowledge base (`个人知识库` / `my_library`),
-  and its directories and documents, one lazy level at a time (see
+- the **lower half of the column is the Feishu document panel**: the selected
+  project's own folder in Feishu — the one created when the project was created —
+  with the signed-in `lark-cli` user, its subdirectories and documents one lazy
+  level at a time, and the actions for a project that has no folder yet (see
   [The Feishu document panel](#the-feishu-document-panel));
 - a **Git button sits in the session header's right-hand utilities** and opens a
   right-hand drawer for the current session's project: branches, changes, commit
@@ -61,8 +66,68 @@ own the rename dialog). The dropdown's rows are: the projects, **新增项目…
 **编辑项目…** and **删除项目** for the selected one — see
 [Editing a project](#editing-a-project) for what the edit form changes.
 
+The list has **no header row**. It used to open with one naming the selected
+project — which the dropdown directly above the New Session button already names,
+so it was a second copy of one fact — and then with that same row carrying the
+session count alone, which spent a row of the column on a number. The count now
+rides the SEARCH row (`[data-wui='sessionCount']`, beside the field, never
+wrapping and never shrinking — the field gives up the room instead), so the list
+starts with a control the operator uses. What the scope is stays visible:
+`data-project` on the list carries it, the count's tooltip carries the project's
+path, and the dropdown trigger keeps that path in its own tooltip and spells it
+out in its menu.
+
 `project` is this plugin's word for a DSH **workspace**: a host-registered
 directory whose sessions share its path.
+
+## The FDE stage tag
+
+Directly above **New Session** sits one row carrying the project's stage in the
+FDE delivery flow (`src/client/StageTag.tsx`, `src/client/stage.ts`):
+
+```
+◔ 需求明确                        3/6  ⌄
+```
+
+Clicking it opens the flow itself, top to bottom, in delivery order: 需求明确 →
+技术选型与详设 → 代码开发与自测 → 测试环境验收 → 上线部署 → 上线验收.
+
+What the panel says is POSITIONAL, and that is the whole rule — one index decides
+every node, so nothing can go inconsistent:
+
+| Where a stage sits | Marker | Connecting rail | Row |
+|---|---|---|---|
+| behind the current stage | filled green disc with a white check | green on both sides | plain, **已完成** |
+| **the current stage** | the same disc, a size larger, breathing a halo | green above, grey below | tinted, bold label, **运行中** |
+| ahead of the current stage | hollow grey circle | grey on both sides | greyed out, **待开始** |
+
+- **The tag's ring is the reached share of the flow** (1/6 … 6/6, the current
+  stage counting as reached), so the column states progress with the panel shut.
+- **Clicking a node moves the project to that stage.** The panel stays open and
+  re-states the flow around it, which is the feedback for the click.
+- **The stage is per PROJECT**, keyed by workspace id in `localStorage`, for the
+  same reason the project selection is a client fact: nothing on the host records
+  delivery progress, and inventing a record would make the tag claim work the
+  operator has not done here. A project with no record starts at 需求明确. A
+  record the plugin cannot trust — a truncated write, a hand-edited value, a stage
+  index that no longer exists — degrades to the first stage and is repaired by the
+  next click, never by an error.
+- **In the rail** the tag becomes a 36px square carrying the ring alone (no words
+  fit in the track), and its `aria-label` still names the stage and the step, so
+  collapsing the column hides the flow's words without losing the flow.
+
+The panel is PORTALED to the page body and positioned from the tag's viewport
+rect, because the column clips its own overflow — it is a sliding track — so an
+in-place panel would be cut off at the 56px rail edge. That portal explains two
+things the component has to own rather than inherit:
+
+- **the outside-click dismiss checks BOTH the trigger and the panel**, since the
+  shared `useDismissOnOutsidePointer` takes a single root and would close the
+  panel on every click *inside* it;
+- **opening moves focus onto the running stage**, and only once the panel has been
+  PLACED — it is `visibility: hidden` until then, and a hidden subtree cannot take
+  focus at all. Without the move, Tab from the trigger would land on the New
+  Session button and walk away from the panel the operator just opened.
 
 ## The git drawer
 
@@ -282,49 +347,67 @@ without also restoring its rules.
 
 ## The Feishu document panel
 
-The column's lower half is a Feishu (Lark) document browser, and it is the one
-part of this plugin that needs the **host**: a page cannot run `lark-cli`, and
+The column's lower half is a Feishu (Lark) **folder** browser: it shows the
+Feishu folder that belongs to the project this column is scoped to — the folder
+this deployment created for the project when the project was created. It is the
+one part of this plugin that needs the **host**: a page cannot run `lark-cli`, and
 Feishu credentials must not reach a browser. So the work is split.
 
 **Host half** (`src/host/lark.ts`, `src/host/routes.ts`, mounted by `apply`):
 
 | Route | Answers |
 |---|---|
-| `GET /dsh-web-ui/lark/state` | the signed-in user (`auth status` + `contact +get-user`) and the personal knowledge base (`wiki spaces get space_id=my_library`) |
-| `GET /dsh-web-ui/lark/spaces` | the readable knowledge spaces, personal library first (Feishu never returns `my_library` from `space-list`, so it is resolved separately) |
-| `GET /dsh-web-ui/lark/nodes?space=…&parent=…&pageToken=…` | one page of one level of wiki nodes (`wiki +node-list`, page size 50) |
-| `POST /dsh-web-ui/lark/folder` `{path}` | the project's folder in the deployment's Feishu archive folder — see [The project's Feishu folder](#the-projects-feishu-folder) |
+| `GET /dsh-web-ui/lark/state` | the signed-in user (`auth status` + `contact +get-user`) |
+| `GET /dsh-web-ui/lark/folder?path=…&name=…` | **which folder this project owns** — from the project's record, or adopted from the archive by name (below) |
+| `GET /dsh-web-ui/lark/files?folder=…&pageToken=…` | one page of one folder's children (`drive files list`, page size 50) |
+| `POST /dsh-web-ui/lark/folder` `{path, name?}` | create the project's folder in the deployment's Feishu archive folder, **and record it** — see [The project's Feishu folder](#the-projects-feishu-folder) |
+| `POST /dsh-web-ui/lark/folder/attach` `{path, folderToken, name?, url?}` | use a folder the archive already holds for this project |
 
 Three properties make that seam safe to expose to a page:
 
 - **no shell** — every call is `execFile` with an argv array, and tokens are
-  validated against the CLI's own alphabet first, so nothing from a query string
-  can become a shell word;
+  validated against the CLI's own alphabet first (in `createFolder`, in the
+  `files` route, and in `attach`), so nothing from a query string can become a
+  shell word or a folder name;
 - **serialized** — the CLI refreshes an expiring user token on the first user
   call, and two concurrent refreshes race on one credential file, so calls go
   through one queue;
-- **failure is data** — a missing binary, an expired login, a transport failure
-  (the CLI's own `"type": "network"`), and a stale node token are returned as
-  typed codes the panel renders, never as an empty list or a 500.
+- **failure is data** — a missing binary, an expired login, a login missing a
+  scope, a transport failure (the CLI's own `"type": "network"`), and a stale
+  token are returned as typed codes the panel renders, never as an empty list or
+  a 500.
 
 **Browser half** (`src/client/LarkDocsPanel.tsx`) renders the header strip (user
-name + avatar + knowledge-base switcher + refresh), then the tree. A node with
-children behaves as a **directory** (the row expands and fetches that level); a
-node without children is a **document** (the row opens
-`https://feishu.cn/wiki/<node_token>` in a new tab, as does the hover button on
-directory rows). One level is one request, results are cached briefly on the
-host, and every in-flight read carries the generation it was issued in — a reply
-that lands after a refresh or a space switch is dropped rather than painted into
-the new space.
+name + avatar + the project's folder name as a link into Feishu + refresh), then
+the tree. The host answers "which folder?" with one of four outcomes, and each
+one owes the operator a different affordance:
 
-The user's personal knowledge base is the default view, because that is what the
-panel is for; the switcher next to the user name offers the team knowledge
-spaces too, which is where the real directory trees usually live.
+| Outcome | What the panel shows |
+|---|---|
+| `record` / `adopted` | the folder's contents, one lazy level per expansion |
+| `missing` | *this project has no folder in the archive yet* — plus **create it**, or paste the link of one that already exists |
+| `ambiguous` | every same-named folder found, each with **use this folder** and a link |
+| a Feishu failure | the reason, plus the fix for that reason (a missing scope names the scope) |
+
+An entry whose `type` is `folder` — or a `shortcut` whose target is a folder —
+behaves as a **directory** (the row expands and fetches that level); anything
+else is a **leaf** (the row opens its Feishu link in a new tab, as does the hover
+button). One level is one request, results are cached briefly on the host, and
+every in-flight read carries the generation it was issued in — a reply that lands
+after a refresh or a project switch is dropped rather than painted into the new
+project. The recursion carries its own ancestry, so a shortcut pointing back up
+its branch renders as a row that opens instead of one that expands: a listing is
+remote data, and remote data does not get to decide this component's stack depth.
 
 Notes for operators:
 
-- a personal library can be **flat** (documents at the root, no directories) —
-  the panel then renders a file list, which is the honest answer;
+- **`space:document:retrieve` is required** on the `lark-cli` login to list a
+  Drive folder's contents. A login made for the older knowledge-base panel may
+  not carry it; the panel then says so and names the scope, and the fix is
+  `lark-cli auth login --scope "space:document:retrieve"`. Creating a folder
+  still needs only `space:folder:create`, and adopting an existing one needs the
+  listing scope too, because it is a listing;
+- a folder can be **empty** — the panel says so, which is the honest answer;
 - `DSH_WEB_UI_LARK_CLI` pins the executable path when it is not on `PATH` (the
   host also probes `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`);
 - the routes are **optional capability**: `apply` reaches `webServer` through
@@ -432,15 +515,34 @@ of the column when things go right: the sidebar is a navigation surface, and a
 success there would push the session list down for four seconds on every project
 creation. A repeated success re-announces itself (the banner is keyed per show).
 
-**No duplicate check, on purpose.** The host does not look for an existing
-folder of that name before creating: it calls `drive +create-folder` once and
-reports what Feishu made (`createFolder` in `src/host/lark.ts`). Feishu Drive
-accepts two sibling folders with the same name and never refuses the second, so
-"already exists" could only ever be a *read* of the parent folder — a listing
-that costs a scope (`space:document:retrieve`) the rest of the plugin does not
-need. The consequence is deliberate and worth stating plainly: **if a folder of
-that name is already there, this creates a SECOND one**, and re-adding the same
-project adds another folder rather than reusing the first.
+**No duplicate check on the CREATE path, on purpose.** The host does not look for
+an existing folder of that name before creating: it calls `drive +create-folder`
+once and reports what Feishu made (`createFolder` in `src/host/lark.ts`). Feishu
+Drive accepts two sibling folders with the same name and never refuses the
+second, so "already taken" can never be an answer a create call receives — the
+only way to know is to LIST the parent. The consequence is deliberate and worth
+stating plainly: **if a folder of that name is already there, POSTing creates a
+SECOND one**. Re-adding the same project adds a folder rather than reusing the
+first.
+
+**The panel is where looking happens.** `GET /dsh-web-ui/lark/folder` is the
+other half of that decision, and it is what makes the panel show the folder a
+project already owns:
+
+1. the folder's token is **recorded on the project** when it is created
+   (`larkFolderToken`/`larkFolderUrl` in `~/.dsh/storages/web_ui_projects.json`),
+   so the common case is answered from the record — no listing, and not affected
+   by a later rename in Feishu;
+2. a project with **no recorded folder** (created before the plugin recorded one,
+   or whose create failed) makes the host read the archive once and look for
+   folders whose name IS the project's name. Exactly one match is **adopted**: it
+   is written to the record, so the project shows the folder it created instead
+   of a fresh duplicate, and the lookup happens once rather than on every open;
+3. **none** and **several** are reported as states rather than guessed at — the
+   operator is offered *create a folder* or *paste the link of one that exists*,
+   and for several, the candidates themselves. This plugin cannot tell "the
+   folder is gone" from "someone renamed it in Feishu", and between two
+   same-named folders it has no basis to prefer one.
 
 **The folder is named after the PROJECT.** The panel sends the project's
 `name` — what the operator typed into the New Project form, which is also the
@@ -449,7 +551,8 @@ is deliberately not the directory's last segment: the form's name field only
 SUGGESTS that segment, so a project called `陕西代码模型` living in `~/work/sx-model`
 gets `陕西代码模型` in the archive. `path` travels with the name so a request still
 makes sense without a title, and the path's segment is the fallback when the
-panel has no name to send.
+panel has no name to send. The same name is what the archive is searched for when
+adopting.
 
 **The parent is the host's decision.** The host always uses its own configured
 parent token, so a caller cannot address another folder — a browser-supplied
@@ -458,19 +561,28 @@ is validated as a NAME rather than as a path (a separator, `.` or `..` is a 400,
 never a silent rewrite), because the sidebar and the archive disagreeing about
 what a project is called is exactly the confusion this feature exists to remove.
 
+**An adopted folder is only ever a pointer this plugin stores.** `attach` accepts
+a folder token and an http(s) link and records them; it does NOT verify the folder
+exists and it does not move anything, because the listing that follows reports a
+token Feishu cannot resolve in the panel's own words — and a page that could make
+the host move files would be a far bigger surface than this feature needs.
+
 What IS still enforced before anything is written: the parent token and the name
 are validated on the host (the name must be non-blank, free of control
-characters, and within Feishu's 256-byte ceiling), and a create whose answer
-carries no `folder_token` is reported as a failure rather than as a success.
+characters, and within Feishu's 256-byte ceiling); a folder token is checked
+against the CLI's own alphabet in every route that takes one; and a create whose
+answer carries no `folder_token` is reported as a failure rather than as a
+success.
 
 Requirements and knobs:
 
 | Fact | Detail |
 |---|---|
 | Folder name | the project's name from the New Project form (workspace title); the path's last segment when no name is sent |
-| Scope | creating needs **`space:folder:create`** on the `lark-cli` login — the listing scope is no longer involved |
+| Scope | creating needs **`space:folder:create`**; the panel's listing and its adoption pass need **`space:document:retrieve`**, because both are listings |
 | CLI | the same `lark-cli` the document panel uses; `DSH_WEB_UI_LARK_CLI` pins its path |
 | Parent folder | `DSH_WEB_UI_LARK_FOLDER` overrides the token for another tenant or another archive folder (default: the folder above) |
+| Where the token is recorded | the project's record, beside the name and the product answers — `larkFolderToken` / `larkFolderUrl` |
 | Identity | `--as user` — the folder is created as the signed-in operator, so it inherits their permissions |
 | Failure answer | HTTP 200 with `{ ok: false, error: { code, message } }` inside — content the strip renders. Only a malformed request is a 4xx |
 
@@ -597,10 +709,14 @@ needs `dsh web` restarted before the new code is live.
 
 ```sh
 node scripts/smoke-git.mjs                            # the git drawer: routes + DOM, no GUI needed
+pnpm harness:folder-route                             # the Feishu folder routes, no GUI needed
+pnpm harness:project-record                           # the project record (incl. its Feishu folder), no GUI needed
 pnpm harness:new-project-form                         # the New Project form, no GUI needed
+pnpm harness:lark-panel                               # the Feishu folder panel, no GUI needed
 CHROME=<chromium> node scripts/smoke.mjs              # structure, rail, plugin list
 CHROME=<chromium> node scripts/smoke-new-project.mjs  # New Project flow, host mocked at the wire
 CHROME=<chromium> node scripts/preview/measure-form.mjs  # the form's geometry, in a real browser
+CHROME=<chromium> node scripts/preview/measure-stage-tag.mjs  # the stage tag: flow states + painted pixels
 ```
 
 `smoke-git.mjs` needs no running GUI and **no login**: it is the only test here
@@ -631,7 +747,8 @@ external (`require()` from the shell's module table), so nothing here declares
 them, but the typecheck and the DOM test both need them present.
 
 `smoke.mjs` asserts the takeover, that the shipped seats still render inside the
-column, the row order (project row above New Session), **that switching project
+column, the row order (project row → stage tag → New Session, and the rail's
+square stage tag beside it), **that switching project
 re-scopes the session list with zero overlap between the two projects**, that the
 scope survives a reload, that a row's rename dialog reaches `session.rename` with
 the clicked session's id, the rail geometry, and that the plugin is listed in
@@ -650,15 +767,16 @@ backgrounds, and the conditional product-card row. It also mocks
 a created folder is reported as an informational strip, and a Feishu scope
 failure is reported as a warning **while the project is still created**.
 
-Two offline harnesses cover the folder side effect without a running host, which
+Four offline harnesses cover the folder side effect without a running host, which
 matters here because this deployment's GUI sits behind the QR login gate:
 
 | Command | What it pins down |
 |---|---|
-| `pnpm harness:project-record` | the project record's storage and routes: a write round-trips through the pinned document, a project with no record answers `null`, a malformed/empty/future-versioned document degrades to "no records" and is repaired by the next write, a bad request never touches the file (and is a 400), and the card catalogue distinguishes "none configured" from "broken" and refuses duplicate ids |
-| `pnpm harness:folder-route` | the host route's contract: POST only, 400s for a malformed body (which never reach the CLI), the folder named from the request's `name` (the project's name) with the path's segment as the fallback and a path-shaped name refused, **exactly one create and ZERO parent-folder reads** per request (the create-only rule, asserted rather than assumed), a repeat request creating a second folder, the deployment's parent token travelling to the CLI even when the request names another, and a Feishu failure answered as 200/`ok:false` |
+| `pnpm harness:project-record` | the project record's storage and routes: a write round-trips through the pinned document, a project with no record answers `null`, the Feishu folder a form write does not carry SURVIVES that write, a record from before folders existed reads as "no folder", a malformed/empty/future-versioned document degrades to "no records" and is repaired by the next write, a bad request never touches the file (and is a 400), and the card catalogue distinguishes "none configured" from "broken" and refuses duplicate ids |
+| `pnpm harness:folder-route` | the hosts's folder routes: the methods, 400s for every malformed request (a path-shaped name, an argv-shaped token, a non-http URL — none of which reach the CLI), the folder named from the request's `name` (the project's name) with the path's segment as the fallback, **exactly one create and ZERO parent-folder reads** per create (the create-only rule, asserted rather than assumed), the deployment's parent token travelling to the CLI even when the request names another, a create RECORDING the folder and a recorded folder answered with no listing at all, all four resolution outcomes (`record`/`adopted`/`missing`/`ambiguous`) including that adoption is written once and ambiguity writes nothing, the listing's page and its folder token inside the command's `--params`, and a Feishu failure — including a missing scope — answered as 200/`ok:false` |
 | `pnpm harness:folder-flow` | the browser flow: the exact request it sends (path **and** project name), that the session opens **before** the folder call, that a success leaves the sidebar strip EMPTY and announces itself through the system banner (re-announced on a repeat run), that a failure goes to the strip and NOT to the banner, every failure sentence read from the real dictionary, and that no dedup copy is reachable any more |
 | `pnpm harness:new-project-form` | the form itself, driven by clicks in jsdom: what it asks for, that opening it touches nothing, the product-card row appearing for `已有产品` and for nothing else (fed by the host's catalogue, which this harness answers), the folder field falling back to the browser on a host with no native chooser, the draft surviving that round trip, what the submission sends — and EDIT mode end to end: the prefill from the record, the read-only directory, the save reaching both `workspace.rename` and the record |
+| `pnpm harness:lark-panel` | the panel itself, driven by clicks in jsdom over mocked routes: nothing read when no project is selected, one listing per folder opened and none twice, the project's folder name as the link it opens in Feishu, documents opening in Feishu, "load more" asking for the page token the host offered, the MISSING state's create round trip (POST then re-resolve) and its pasted-link round trip, the AMBIGUOUS state offering each candidate and recording the chosen one, a shortcut that points back up its own branch rendering as a row that opens rather than a stack overflow, and a `scope-missing` refusal rendered with the scope to ask for |
 
 `harness:folder-route` drives the real `registerLarkRoutes` against a fake
 webserver that hands back the handler, with a stubbed `lark-cli` on disk; the
@@ -666,11 +784,13 @@ adapter's create path was additionally probed against the real tenant, which is
 where two facts came from: the live `scope-missing` envelope (what a missing
 permission looks like end to end) and that Feishu happily accepts two sibling
 folders with the same name — which is why "already exists" could never have been
-answered by the create call itself. `harness:folder-flow` and `harness:new-project-form` render the real flow
-and the real dialog from source in jsdom (bundled by `scripts/harness/tsdown.mjs`,
-whose UI-primitives stub is generated from the real package's icon declarations
-so a new icon can never silently break the harness) with the runtime's project
-services stubbed.
+answered by the create call itself, and why the panel's adoption looks for one
+instead. `harness:folder-flow`, `harness:new-project-form`, and
+`harness:lark-panel` render the real flow, the real dialog, and the real panel
+from source in jsdom (bundled by `scripts/harness/tsdown.mjs`, whose
+UI-primitives stub is generated from the real package's icon declarations so a
+new icon can never silently break the harness) with the runtime's project
+services stubbed and `fetch` answering the way the host's routes do.
 
 `scripts/preview/measure-form.mjs` is the LAYOUT check, and it needs a browser
 but no host: it renders the dialog's markup to a standalone HTML file
@@ -680,15 +800,49 @@ the three answers on one line, the accent on the chosen answer. It exists becaus
 a jsdom render has no cascade, so no other test here can tell a styled form from
 an unstyled one.
 
-The Feishu panel was verified the same way: the host routes answer
-`/dsh-web-ui/lark/{state,spaces,nodes}` against the real `lark-cli` (checked
-directly with a Node probe for the signed-in user, the personal library, a root
-level, an expanded directory, and the two rejection paths for a malformed space
-id and node token), and the browser half was driven with the three routes mocked
-at the wire to assert the tree itself — root level, type chips, directory
-chevrons, one-step indentation per level, expansion and collapse, the
-`pageToken` "load more" append, `window.open` of `feishu.cn/wiki/<token>` from a
-document row, the roster menu, and a space switch re-reading that space.
+`scripts/preview/measure-stage-tag.mjs` is the same idea for the FDE flow, with
+one difference that matters: it renders the REAL component (`stage-tag-entry.tsx`,
+bundled by `stage-tag.mjs` with the primitives aliased to the checkout's own
+source, so the shipped icons and the shipped placement hook are what run), serves
+it over HTTP — a `file://` origin refuses `localStorage`, and the tag's stage lives
+there — and then seeds a stage and drives it. It asserts the whole positional
+contract per scenario (which nodes are checked, which one is running, which are
+grey), the rail's geometry down to the node centres, the placement and
+clamping of the portaled panel, that Escape and an outside click close it, that a
+click moves and persists the stage, that a rail tag still announces the stage it
+no longer spells out, that the dark theme re-tints the flow, and that an
+unreadable stored record degrades to the first stage and is repaired by the next
+click. It also reads the SCREENSHOT's pixels (`pixel.mjs` decodes a 1×1-capable
+PNG with `node:zlib`): a computed style is a promise, not a picture, so the green
+arc, the white check on a green disc, the hollow unreached node and the tinted
+running row are confirmed as PAINTED — which is the only way this deployment can
+check them, since every model configured here takes text and nothing can look at
+the image. `stage-tag.html` is the artifact to open by eye.
+
+The Feishu panel is verified in three places, because it is the part whose
+subject comes from outside this plugin:
+
+- **the host routes**, offline: `pnpm harness:folder-route` registers the real
+  routes against a fake webserver with `lark-cli` stubbed on disk and the project
+  record pinned to a temporary file, and checks what a reviewer would otherwise
+  have to trust — the methods, every malformed request (a path-shaped name, an
+  argv-shaped token, a `javascript:` URL), that creating reads NOTHING first while
+  resolving does, that a create RECORDS the folder and a recorded folder is then
+  answered without any listing, all four resolution outcomes, and that a Feishu
+  refusal — including a missing scope — travels as content rather than as a
+  transport failure;
+- **the panel**, offline: `pnpm harness:lark-panel` renders the real component in
+  jsdom with `fetch` answering the way the routes do, and drives it the way an
+  operator would — nothing read when no project is selected, one listing per
+  folder opened (and none twice), documents opening in Feishu, "load more"
+  asking for the page the host offered, the create and paste-a-link round trips,
+  choosing between several same-named folders, a shortcut that points back up its
+  own branch rendering as a row that opens rather than a stack overflow, and a
+  refusal rendered with the scope to ask for;
+- **the live host**, by hand: `curl '127.0.0.1:3080/dsh-web-ui/lark/state'` (the
+  signed-in user), `…/lark/folder?path=…&name=…` (the resolution), and
+  `…/lark/files?folder=…` (a listing) against the real `lark-cli` — the last two
+  only once the login carries `space:document:retrieve`.
 
 Note that the deployment's login gate (`dsh-feishu-login`) sits in front of the
 GUI: a browser check needs either a real scan or `gate: false` on that plugin's
@@ -722,7 +876,7 @@ back afterwards).
 | Which verbs the drawer offers | `buildAction()` in `src/host/git.ts`, and the per-row menus in `GitBranches.tsx` |
 | Initialize-a-repository empty state | the `gitEmpty` block in `GitPanel.tsx` (the `not-a-repo` arm) |
 | The remotes section | `GitBranches.tsx`, `remoteAddressItems()` + the remotes `<section>` |
-| Which knowledge base opens by default | `PERSONAL_SPACE_ID` in `src/client/larkapi.ts`; the host alias is `PERSONAL_LIBRARY` in `src/host/lark.ts` |
+| Which folder the panel shows | the project's own folder: `GET /dsh-web-ui/lark/folder` resolves it from the record (`larkFolderToken`) or adopts it by name; `src/host/routes.ts` `resolveFolder` |
 | The project record (store + routes) | `src/host/projects.ts`, `POST`/`GET /dsh-web-ui/lark/project` |
 | The product-card catalogue | `src/host/products.ts` (`DSH_WEB_UI_PRODUCT_CARDS`, else `products.json` beside the records) |
 | The project form (create + edit) | `src/client/NewProjectDialog.tsx`, driven by `src/client/projectFlow.ts` |
@@ -852,14 +1006,18 @@ working.
   bucket, with an *abort* action for the operation that produced them; there is
   no merge editor, no interactive rebase, and no submodule support.
 - **The Feishu panel is only as available as `lark-cli`.** It reads the
-  operator's own login: no signed-in user, no installed binary, or a host that
-  cannot reach Feishu (a TLS-inspecting proxy or a disconnected VPN) is rendered
-  as that fact, with a Retry — never as an empty tree. A host-half change also
-  needs `dsh web` restarted, unlike the browser half.
-- **The tree lists what the node level says.** Feishu models a "directory" as a
-  node with children (usually a `docx` page), so the panel follows `has_child`
-  rather than a folder flag, and a personal library with no nested nodes renders
-  as a flat list.
+  operator's own login: no signed-in user, no installed binary, a login without
+  `space:document:retrieve`, or a host that cannot reach Feishu (a TLS-inspecting
+  proxy or a disconnected VPN) is rendered as that fact — with the fix for that
+  particular failure and a Retry — never as an empty folder. A host-half change
+  also needs `dsh web` restarted, unlike the browser half.
+- **The panel shows one project's folder, and only what the listing says.** Its
+  subject is the selected project, so a project with no folder gets the create /
+  paste-a-link actions rather than another project's tree; and the rows are the
+  folder's DIRECT children, expanded one level at a time. The scope a listing
+  needs (`space:document:retrieve`) is also what the adoption pass needs, so a
+  login that cannot list cannot adopt either — and the panel says which scope to
+  ask for instead of failing silently.
 - **The conversation surface keeps its shipped look.** It belongs to
   `ui-conversation`, which renders into the frame's `conversation` slot; a
   plugin cannot re-host another plugin's slot, so the centre column is

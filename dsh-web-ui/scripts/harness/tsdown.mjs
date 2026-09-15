@@ -1,14 +1,15 @@
 /**
- * Bundle the New Project flow and form for the offline harnesses
- * (`folder-flow.mjs`, and `new-project-form.mjs` through `form-entry.tsx`).
+ * Bundle the New Project flow, its form, and the Feishu folder panel for the
+ * offline harnesses (`folder-flow.mjs`, `new-project-form.mjs` through
+ * `form-entry.tsx`, and `lark-panel.mjs` through `panel-entry.tsx`).
  *
- * The harnesses verify the flow through the code the shipped client bundle
- * actually contains, so it is bundled from source rather than re-implemented.
- * React stays external — the harness supplies its own instance — and the
- * primitive library is aliased to a local stub: the flow holds no JSX and never
- * reaches it, while the form does, and the real package's node build imports CSS
- * modules Node cannot load — the same reason `smoke-git.mjs` answers it from a
- * module table.
+ * The harnesses verify the flow and the panel through the code the shipped client
+ * bundle actually contains, so they are bundled from source rather than
+ * re-implemented. React stays external — the harness supplies its own instance —
+ * and the primitive library is aliased to a local stub: the flow holds no JSX and
+ * never reaches it, while the form and the panel do, and the real package's node
+ * build imports CSS modules Node cannot load — the same reason `smoke-git.mjs`
+ * answers it from a module table.
  *
  * The stub's icon exports are GENERATED here, from the real package's own type
  * declarations, and written to `ui-stub.generated.js`: a bundler resolves named
@@ -47,6 +48,7 @@ await build({
   entry: {
     'project-flow': new URL('./entry.ts', here).pathname,
     'new-project-form': new URL('./form-entry.tsx', here).pathname,
+    'lark-panel': new URL('./panel-entry.tsx', here).pathname,
   },
   outDir: new URL('./out', here).pathname,
   format: ['esm'],

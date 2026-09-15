@@ -1,20 +1,31 @@
 /**
- * The browser-facing routes of the Feishu document panel and of the project's
- * Feishu folder.
+ * The browser-facing routes of the project's Feishu folder and of the project's
+ * own record.
  *
- * Three exact GET routes under one prefix, each one a single question the panel
- * asks: *who is signed in and where is their personal knowledge base*, *which
- * spaces can I browse*, and *what is in this node*. They are exact rather than
- * prefix routes so the composition stays inspectable — a prefix would hide the
- * whole surface behind one entry.
+ * The panel's subject is ONE folder: the one this deployment created for the
+ * project when it was created. Four exact routes answer it, each a single
+ * question the panel asks:
  *
- * One POST route joins them (`/folder`): creating a project also creates a
- * same-named folder in this deployment's Feishu folder. It is a POST because it
- * MUTATES a shared drive, and it takes a JSON body — the path — for the same
- * reason the git mutation does: a body is not a URL, so a directory name with
- * `&` or `?` in it cannot reshape the request. It creates UNCONDITIONALLY: it
- * does not read the parent first to look for an existing folder of that name
- * (see `createFolder` in `./lark.ts` for why, and for what that trades away).
+ * - `GET /state` — *who is signed in*, for the header strip;
+ * - `GET /folder?path=&name=` — *which folder is this project's*, resolving it
+ *   from the project's record, and ADOPTING an existing one by name when the
+ *   record has none (see `resolveFolder` below);
+ * - `GET /files?folder=&pageToken=` — *what is in that folder*, one page at a
+ *   time, plus once per subdirectory the operator expands;
+ * - `POST /folder` — *create the folder for this project*, which also RECORDS
+ *   it, and `POST /folder/attach` — *use this folder for this project*, which is
+ *   how the operator answers an ambiguous adoption or points a project at a
+ *   folder it already has.
+ *
+ * They are exact rather than prefix routes so the composition stays
+ * inspectable — a prefix would hide the whole surface behind one entry. Both
+ * mutations are POSTs with a JSON body: they change state (a shared drive, and
+ * this plugin's own record) and a body is not a URL, so a directory name with
+ * `&` or `?` in it cannot reshape the request. `POST /folder` creates
+ * UNCONDITIONALLY: it does not read the parent first to look for an existing
+ * folder of that name (see `createFolder` in `./lark.ts` for why, and for what
+ * that trades away) — looking is what `GET /folder` does, and the operator
+ * decides what it finds.
  *
  * A further three routes are not about Feishu at all: the project's own RECORD —
  * the name, the product background, and the product card the project form
@@ -27,7 +38,7 @@
  * The browser half only ever calls these paths; it never sees the CLI, a token,
  * or a credential. Feishu failures are answered as `{ ok: false, error }` with
  * HTTP 200 because they are *content* the panel renders ("the login expired",
- * "the CLI is not installed"), not transport failures — a 500 is reserved for a
+ * "the login lacks a scope"), not transport failures — a 500 is reserved for a
  * genuine bug in this plugin, which the browser then reports generically. Only a
  * malformed request is a 4xx.
  *
@@ -36,24 +47,27 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
-import { createLarkCli, folderNameFromPath, type LarkOutcome } from './lark.ts'
+import {
+  createLarkCli, DRIVE_TOKEN_PATTERN, feishuUrl, folderNameFromPath,
+  type LarkFolder, type LarkOutcome,
+} from './lark.ts'
 import { asBackground, createProjectStore } from './projects.ts'
 import { readProductCards } from './products.ts'
 
 /** Path prefix of every route this module registers. */
 export const LARK_ROUTE_PREFIX = '/dsh-web-ui/lark'
 
-/** The user + personal knowledge base header facts. */
+/** The signed-in user (the panel's header facts). */
 const STATE_PATH = `${LARK_ROUTE_PREFIX}/state`
 
-/** The readable wiki space roster. */
-const SPACES_PATH = `${LARK_ROUTE_PREFIX}/spaces`
-
-/** One level of wiki nodes. */
-const NODES_PATH = `${LARK_ROUTE_PREFIX}/nodes`
-
-/** The project folder under the deployment's fixed Feishu parent. */
+/** The project's own folder in the deployment's archive. */
 const FOLDER_PATH = `${LARK_ROUTE_PREFIX}/folder`
+
+/** Use one folder for one project (the adopt answer). */
+const ATTACH_PATH = `${LARK_ROUTE_PREFIX}/folder/attach`
+
+/** One page of one folder's children. */
+const FILES_PATH = `${LARK_ROUTE_PREFIX}/files`
 
 /**
  * One project's own record.
@@ -81,6 +95,15 @@ const CARDS_PATH = `${LARK_ROUTE_PREFIX}/cards`
  */
 const PROJECT_FOLDER_TOKEN = process.env['DSH_WEB_UI_LARK_FOLDER'] ?? 'IE6SfqKh3lRv2odSLkHccYh5nog'
 
+/**
+ * How many same-named folders the adoption answer will offer.
+ *
+ * Feishu allows duplicates, so "several projects were re-added under one name"
+ * is a real state. Offering a handful is enough for the operator to recognize
+ * theirs; a list of fifty would be a wall of identical names in a narrow column.
+ */
+const MAX_CANDIDATES = 20
+
 /** Largest request body this module will read, in bytes. */
 const MAX_BODY_BYTES = 8 * 1024
 
@@ -96,8 +119,32 @@ const MAX_BODY_BYTES = 8 * 1024
  */
 const FOLDER_NAME_PATTERN = /^(?!\.{1,2}$)[^/\\]+$/
 
+/**
+ * A Feishu URL a request may hand back.
+ *
+ * Only http(s), and only as a plain URL: it is stored beside the token and
+ * opened by the panel, so anything else — a `javascript:` URL, a data URL, a
+ * file path — would be a link this plugin handed the page rather than one Feishu
+ * did. The token's own shape is checked against the adapter's
+ * `DRIVE_TOKEN_PATTERN`, which is imported rather than restated so the request
+ * guard and the ARGV guard are one rule.
+ */
+const FOLDER_URL_PATTERN = /^https?:\/\/[^\s]{1,512}$/
+
 /** Content type of every response this module writes. */
 const JSON_TYPE = 'application/json; charset=utf-8'
+
+/**
+ * The wire shape of one folder.
+ *
+ * camelCase, like every other record this module sends, so the browser half
+ * reads one convention rather than two.
+ * @param folder - the folder to serialize.
+ * @returns the value to merge into a response.
+ */
+function folderJson(folder: LarkFolder): Record<string, unknown> {
+  return { name: folder.name, folderToken: folder.folderToken, url: folder.url }
+}
 
 /**
  * Write one JSON response.
@@ -241,35 +288,108 @@ export function registerLarkRoutes(ctx: Context): void {
     sendOutcome(res, await cli.state(), value => ({
       loggedIn: value.loggedIn,
       user: value.user ?? null,
-      space: value.space ?? null,
     }))
   }, 'state')
 
-  route(SPACES_PATH, async (req, res) => {
-    if (req.method !== 'GET') { sendMethodNotAllowed(res, 'GET'); return }
-    if (query(req).has('refresh')) cli.invalidate()
-    sendOutcome(res, await cli.spaces(), value => ({ spaces: value }))
-  }, 'spaces')
-
-  route(NODES_PATH, async (req, res) => {
-    if (req.method !== 'GET') { sendMethodNotAllowed(res, 'GET'); return }
-    const params = query(req)
-    const spaceId = params.get('space') ?? ''
-    if (spaceId === '') {
-      sendJson(res, 400, { ok: false, error: { code: 'bad-request', message: 'the `space` parameter is required' } })
-      return
+  /**
+   * Resolve which archive folder belongs to one project.
+   *
+   * The RECORD is the authority when it has one: that token is the folder this
+   * project's creation actually produced, so it is not re-derived, not compared
+   * by name, and not affected by a later rename in Feishu.
+   *
+   * With no token recorded — a project created before this plugin recorded one,
+   * or a create that failed — the archive is read once and searched for folders
+   * whose name IS the project's name. Exactly one match is ADOPTED: it is
+   * written to the record, so the lookup happens once per project rather than on
+   * every panel open, and the project shows the folder it created instead of a
+   * fresh duplicate. Zero matches and several matches are both reported as
+   * content (`missing` / `ambiguous`) rather than guessed at: this deployment
+   * cannot tell "the folder is gone" from "the operator renamed it", and between
+   * two same-named folders it has no basis to prefer one.
+   *
+   * The read needs `space:document:retrieve` on the `lark-cli` login, which is
+   * the same scope the listing needs — so a login that can show a folder's
+   * contents can also adopt one, and a login that cannot yet do either reports
+   * the scope to ask for.
+   *
+   * @param input - the project's path, the name to search for, and whether to drop caches first.
+   * @returns the wire body to send.
+   */
+  const resolveFolder = async (input: { path: string; name: string; refresh: boolean }): Promise<Record<string, unknown>> => {
+    const { path, name } = input
+    if (input.refresh) cli.invalidate()
+    const record = await projects.get(path)
+    const recorded = record?.larkFolderToken ?? ''
+    if (recorded !== '') {
+      return {
+        ok: true,
+        source: 'record',
+        name,
+        folder: folderJson({
+          name: record?.name ?? name,
+          folderToken: recorded,
+          url: (record?.larkFolderUrl ?? '') === '' ? feishuUrl('folder', recorded) : (record?.larkFolderUrl ?? ''),
+        }),
+        candidates: [],
+      }
     }
-    const parent = params.get('parent')
-    const pageToken = params.get('pageToken')
-    sendOutcome(res, await cli.nodes({
-      spaceId,
-      parentNodeToken: parent === null || parent === '' ? undefined : parent,
-      pageToken: pageToken === null || pageToken === '' ? undefined : pageToken,
-    }), value => ({ nodes: value.nodes, hasMore: value.hasMore, pageToken: value.pageToken ?? null }))
-  }, 'nodes')
+
+    const listed = await cli.children({ folderToken: PROJECT_FOLDER_TOKEN })
+    if (!listed.ok) return { ok: false, error: { code: listed.code, message: listed.message } }
+    const candidates = listed.value
+      .filter(entry => entry.expandToken !== '' && entry.name === name)
+      .map((entry): LarkFolder => ({ name: entry.name, folderToken: entry.expandToken, url: entry.url }))
+
+    if (candidates.length === 1) {
+      const found = candidates[0] as LarkFolder
+      const stored = await projects.setLarkFolder({ path, name, folderToken: found.folderToken, url: found.url })
+      log.info(`adopted the existing Feishu folder \`${found.name}\` for ${stored.path}`)
+      return { ok: true, source: 'adopted', name, folder: folderJson(found), candidates: [] }
+    }
+
+    return {
+      ok: true,
+      source: candidates.length === 0 ? 'missing' : 'ambiguous',
+      name,
+      folder: null,
+      candidates: candidates.slice(0, MAX_CANDIDATES).map(folderJson),
+    }
+  }
 
   route(FOLDER_PATH, async (req, res) => {
-    if (req.method !== 'POST') { sendMethodNotAllowed(res, 'POST'); return }
+    if (req.method === 'GET') {
+      const params = query(req)
+      const path = (params.get('path') ?? '').trim()
+      if (path === '') {
+        sendJson(res, 400, { ok: false, error: { code: 'bad-request', message: 'the `path` parameter is required' } })
+        return
+      }
+      // The caller may name the project it is asking about — the sidebar's title
+      // for it — because the record is not the authority on the NAME (see
+      // `./projects.ts`). When it does not, the record's copy and then the
+      // path's last segment answer for it.
+      const requested = (params.get('name') ?? '').trim()
+      if (requested !== '' && !FOLDER_NAME_PATTERN.test(requested)) {
+        sendJson(res, 400, {
+          ok: false,
+          error: { code: 'bad-request', message: `\`name\` must be a plain folder name: ${JSON.stringify(requested)}` },
+        })
+        return
+      }
+      const record = await projects.get(path)
+      const name = requested !== ''
+        ? requested
+        : (record?.name ?? '') !== '' ? (record?.name ?? '') : folderNameFromPath(path)
+      if (name === '') {
+        sendJson(res, 400, { ok: false, error: { code: 'bad-request', message: `\`path\` names no directory: ${path}` } })
+        return
+      }
+      sendJson(res, 200, await resolveFolder({ path, name, refresh: params.has('refresh') }))
+      return
+    }
+
+    if (req.method !== 'POST') { sendMethodNotAllowed(res, 'GET, POST'); return }
     const body = await readJsonBody(req)
     if (!body.ok) {
       sendJson(res, 400, { ok: false, error: { code: 'bad-request', message: body.message } })
@@ -316,12 +436,126 @@ export function registerLarkRoutes(ctx: Context): void {
       return
     }
     log.info(`creating the Feishu folder \`${name}\` under ${PROJECT_FOLDER_TOKEN}`)
-    sendOutcome(res, await cli.createFolder({ parentFolderToken: PROJECT_FOLDER_TOKEN, name }), value => ({
-      name: value.name,
-      folderToken: value.folderToken,
-      url: value.url,
-    }))
+    const created = await cli.createFolder({ parentFolderToken: PROJECT_FOLDER_TOKEN, name })
+    if (!created.ok) {
+      sendJson(res, 200, { ok: false, error: { code: created.code, message: created.message } })
+      return
+    }
+    // The folder now RECORDS itself onto the project. That write is what lets
+    // the panel find it later without reading the archive, so it is attempted
+    // here rather than left to the browser — but it is not allowed to turn a
+    // folder that exists into a failure: the create already happened, and the
+    // record is this plugin's own bookkeeping.
+    try {
+      await projects.setLarkFolder({
+        path,
+        name: created.value.name,
+        folderToken: created.value.folderToken,
+        url: created.value.url,
+      })
+      log.info(`recorded the Feishu folder \`${created.value.name}\` for ${path}`)
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      log.warn(`created the Feishu folder \`${created.value.name}\` but could not record it for ${path}: ${reason}`)
+    }
+    sendJson(res, 200, {
+      ok: true,
+      name: created.value.name,
+      folderToken: created.value.folderToken,
+      url: created.value.url,
+    })
   }, 'folder')
+
+  route(ATTACH_PATH, async (req, res) => {
+    if (req.method !== 'POST') { sendMethodNotAllowed(res, 'POST'); return }
+    const body = await readJsonBody(req)
+    if (!body.ok) {
+      sendJson(res, 400, { ok: false, error: { code: 'bad-request', message: body.message } })
+      return
+    }
+    const record = typeof body.value === 'object' && body.value !== null
+      ? body.value as Record<string, unknown>
+      : {}
+    const path = typeof record['path'] === 'string' ? record['path'].trim() : ''
+    if (path === '') {
+      sendJson(res, 400, { ok: false, error: { code: 'bad-request', message: '`path` must be a non-empty string' } })
+      return
+    }
+    // The token is the one field that becomes an ARGV element below, so it is
+    // checked against the CLI's own alphabet here as well as in the adapter. A
+    // caller that wants to point a project at a folder it can reach is doing
+    // what this route is for; a caller that sends something argv-shaped is not,
+    // and the shape is what tells them apart.
+    const folderToken = typeof record['folderToken'] === 'string' ? record['folderToken'].trim() : ''
+    if (!DRIVE_TOKEN_PATTERN.test(folderToken)) {
+      sendJson(res, 400, {
+        ok: false,
+        error: { code: 'bad-request', message: `\`folderToken\` is not a Drive folder token: ${JSON.stringify(folderToken)}` },
+      })
+      return
+    }
+    const rawUrl = typeof record['url'] === 'string' ? record['url'].trim() : ''
+    if (rawUrl !== '' && !FOLDER_URL_PATTERN.test(rawUrl)) {
+      sendJson(res, 400, { ok: false, error: { code: 'bad-request', message: '`url` must be an http(s) URL' } })
+      return
+    }
+    const requestedName = typeof record['name'] === 'string' ? record['name'].trim() : ''
+    const existing = await projects.get(path)
+    const name = requestedName !== ''
+      ? requestedName
+      : (existing?.name ?? '') !== '' ? (existing?.name ?? '') : folderNameFromPath(path)
+    if (name === '') {
+      sendJson(res, 400, { ok: false, error: { code: 'bad-request', message: `\`path\` names no directory: ${path}` } })
+      return
+    }
+    const stored = await projects.setLarkFolder({
+      path,
+      name,
+      folderToken,
+      // A caller that pasted a link supplies the URL; one that picked a
+      // candidate already has it. The fallback keeps "open in Feishu" working
+      // for a bare token.
+      url: rawUrl === '' ? feishuUrl('folder', folderToken) : rawUrl,
+    })
+    log.info(`recorded the Feishu folder ${folderToken} for ${path}`)
+    // The same three fields `GET /folder` and `POST /folder` answer, so the
+    // browser half reads one folder shape from all three routes. The name is the
+    // PROJECT's — what the panel labels this folder with — because the folder's
+    // own name in Feishu is whatever the operator called it there.
+    sendJson(res, 200, {
+      ok: true,
+      name: stored.name,
+      folderToken,
+      url: stored.larkFolderUrl,
+    })
+  }, 'folder/attach')
+
+  route(FILES_PATH, async (req, res) => {
+    if (req.method !== 'GET') { sendMethodNotAllowed(res, 'GET'); return }
+    const params = query(req)
+    const folder = (params.get('folder') ?? '').trim()
+    if (folder === '') {
+      sendJson(res, 400, { ok: false, error: { code: 'bad-request', message: 'the `folder` parameter is required' } })
+      return
+    }
+    // A token that cannot be one is refused here rather than inside the adapter:
+    // it is a malformed REQUEST, and the adapter's own refusal would read as a
+    // Feishu problem in the panel.
+    if (!DRIVE_TOKEN_PATTERN.test(folder)) {
+      sendJson(res, 400, {
+        ok: false,
+        error: { code: 'bad-request', message: `\`folder\` is not a Drive folder token: ${JSON.stringify(folder)}` },
+      })
+      return
+    }
+    if (params.has('refresh')) cli.invalidate()
+    const pageToken = params.get('pageToken')
+    sendOutcome(res, await cli.files({
+      folderToken: folder,
+      pageToken: pageToken === null || pageToken === '' ? undefined : pageToken,
+    }), value => ({ nodes: value.nodes, hasMore: value.hasMore, pageToken: value.pageToken ?? null }))
+  }, 'files')
+
 
   route(PROJECT_PATH, async (req, res) => {
     if (req.method === 'GET') {
@@ -390,5 +624,4 @@ export function registerLarkRoutes(ctx: Context): void {
       : { ok: false, error: { code: 'cards-unreadable', message: cards.message } })
   }, 'cards')
 
-  log.info(`Feishu routes registered at ${LARK_ROUTE_PREFIX} (project folder ${PROJECT_FOLDER_TOKEN})`)
-}
+  log.info(`Feishu routes registered at ${LARK_ROUTE_PREFIX} (project folder ${PROJECT_FOLDER_TOKEN})`)}

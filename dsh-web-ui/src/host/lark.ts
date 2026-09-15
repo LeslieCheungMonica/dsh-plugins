@@ -4,8 +4,15 @@
  * Feishu credentials, token refresh, and the QR login all live in `lark-cli`
  * (the operator's own integration), so this plugin owns none of them. What it
  * owns is the seam: run the CLI with a fixed argv, parse its JSON envelope, and
- * hand the browser a small, stable shape — the signed-in user, the personal
- * knowledge base (`my_library`), and one level of wiki nodes at a time.
+ * hand the browser a small, stable shape — the signed-in user, one level of a
+ * Drive folder's children, and the folders created for a project.
+ *
+ * The folders this adapter reads are the PROJECT's own: creating a project
+ * creates one folder per project in this deployment's archive folder, and the
+ * panel shows that folder's contents rather than a knowledge base. Two reads
+ * serve that: `files` lists one page of one folder, and `children` walks a
+ * folder's pages for the name lookup that adopts a folder a project created
+ * before its token was recorded (see `GET /folder` in `./routes.ts`).
  *
  * Three rules make that seam safe to expose to a page:
  *
@@ -40,38 +47,35 @@ export interface LarkUser {
   readonly avatarUrl: string
 }
 
-/** One wiki space the caller can read. */
-export interface LarkSpace {
-  /** Space id, or the literal `my_library` for the personal library. */
-  readonly spaceId: string
-  /** Space name as Feishu reports it. */
+/** One entry in a Drive folder: a document, an uploaded file, or a subfolder. */
+export interface LarkEntry {
+  /** The entry's own token: what a Feishu link addresses and what names it. */
+  readonly token: string
+  /**
+   * The token to LIST when this entry is a directory, `''` when it is a leaf.
+   *
+   * A plain folder lists by its own token; a SHORTCUT into a folder lists by its
+   * target's. Keeping both facts in one field is what makes "is this a
+   * directory" and "what do I expand" the same question in the browser, rather
+   * than two that could disagree.
+   */
+  readonly expandToken: string
+  /** `folder` | `docx` | `sheet` | `bitable` | `mindnote` | `slides` | `file` | `shortcut` | … */
+  readonly type: string
+  /** Title, empty for the few entries Feishu reports without one. */
   readonly name: string
-  /** `my_library` for the personal library, `team` for a knowledge space. */
-  readonly spaceType: string
-  /** `private` | `public` | … when reported. */
-  readonly visibility: string
+  /**
+   * Browser link. This adapter always sets it — Feishu reports one for most
+   * entries, and the rest are built from the type and token below — so the
+   * panel never has to know Feishu's per-type URL layout.
+   */
+  readonly url: string
 }
 
-/** One wiki node: a document, a file, or a node with children (a "directory"). */
-export interface LarkNode {
-  /** Node token — the identity to expand and the token wiki URLs carry. */
-  readonly nodeToken: string
-  /** The underlying document token (`obj_type` says what it is). */
-  readonly objToken: string
-  /** `docx` | `sheet` | `bitable` | `slides` | `mindnote` | `file` | … */
-  readonly objType: string
-  /** `origin` for a real node, `shortcut` for a link into another space. */
-  readonly nodeType: string
-  /** Title, empty for the few nodes Feishu reports without one. */
-  readonly title: string
-  /** Whether this node has children — i.e. whether it is a directory here. */
-  readonly hasChild: boolean
-}
-
-/** One page of a node level. */
+/** One page of one folder's children. */
 export interface LarkLevel {
-  /** The nodes of this page, in Feishu's order. */
-  readonly nodes: readonly LarkNode[]
+  /** The entries of this page, in Feishu's order. */
+  readonly nodes: readonly LarkEntry[]
   /** Whether a further page exists. */
   readonly hasMore: boolean
   /** Token to pass back for that further page; absent when `hasMore` is false. */
@@ -84,8 +88,16 @@ export interface LarkState {
   readonly loggedIn: boolean
   /** The signed-in user, when there is one. */
   readonly user: LarkUser | undefined
-  /** The personal knowledge base, when it resolved. */
-  readonly space: LarkSpace | undefined
+}
+
+/** One Drive folder: a project's own folder in this deployment's archive. */
+export interface LarkFolder {
+  /** Folder name — the project's name, as the operator typed it. */
+  readonly name: string
+  /** The folder's token: what lists its contents and what a record stores. */
+  readonly folderToken: string
+  /** Shareable URL; always set by this adapter. */
+  readonly url: string
 }
 
 /** Why an operation could not produce a value. */
@@ -142,14 +154,31 @@ const MAX_BUFFER_BYTES = 32 * 1024 * 1024
 /** How long a resolved CLI path is trusted (an install can move a binary). */
 const BIN_CACHE_MS = 30_000
 
-/** Header facts change when someone signs in or renames a space, not per click. */
+/** Header facts change when someone signs in, not per click. */
 const STATE_TTL_MS = 30_000
-
-/** The space roster is nearly static. */
-const SPACES_TTL_MS = 120_000
 
 /** A level is re-read on every expand, so a short grace period is enough. */
 const NODES_TTL_MS = 20_000
+
+/**
+ * How long a resolved folder listing is reused by the name lookup.
+ *
+ * The archive folder changes when a project is created — rare, and the operator
+ * has just asked us to look — so this is short enough that a folder created a
+ * moment ago is seen, and long enough that the panel's resolve and its first
+ * listing cost one walk rather than two.
+ */
+const CHILDREN_TTL_MS = 15_000
+
+/**
+ * Ceiling on pages walked by `children`.
+ *
+ * The archive holds one folder per project; at 200 entries a page, 10 pages is
+ * 2000 projects. A bounded walk is what keeps a listing from becoming an
+ * unbounded fan-out against a live API, and a walk that hits the ceiling says so
+ * in the log rather than pretending the folder was fully read.
+ */
+const CHILDREN_MAX_PAGES = 10
 
 /** Feishu's own ceiling on a folder name. */
 const FOLDER_NAME_MAX_BYTES = 256
@@ -171,17 +200,15 @@ export function folderNameFromPath(path: string): string {
   return (at < 0 ? trimmed : trimmed.slice(at + 1)).trim()
 }
 
-/** The personal document library: a per-user alias, valid only with `--as user`. */
-export const PERSONAL_LIBRARY = 'my_library'
-
-/** Wiki space ids: numeric, or the `my_library` alias. */
-const SPACE_ID_PATTERN = /^(?:my_library|[0-9]{1,32})$/
-
-/** Node tokens are URL-safe base32-ish ids. */
-const NODE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{1,128}$/
-
-/** Drive folder tokens are the same alphabet (`fldcn…` for newer spaces). */
-const FOLDER_TOKEN_PATTERN = NODE_TOKEN_PATTERN
+/**
+ * Drive tokens — folders, documents, and files — share one alphabet.
+ *
+ * They are opaque to this adapter: the only thing it does with one is prove it
+ * cannot be argv-shaped text before handing it to the CLI. Feishu's current
+ * tokens are URL-safe base32-ish (`fldcn…`, `doxcn…`), and older ones are plain
+ * alphanumerics.
+ */
+export const DRIVE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{1,128}$/
 
 /**
  * A name this adapter will hand to Feishu: no control characters (`U+0000`–`U+001F`
@@ -303,16 +330,29 @@ interface ExecOutcome {
 
 /** The adapter the routes use. */
 export interface LarkCli {
-  /** Read the signed-in user and the personal knowledge base. */
+  /** Read the signed-in user. */
   state: () => Promise<LarkOutcome<LarkState>>
-  /** List the readable wiki spaces, personal library first. */
-  spaces: () => Promise<LarkOutcome<readonly LarkSpace[]>>
-  /** List one level of nodes under a parent (or the space root). */
-  nodes: (input: {
-    spaceId: string
-    parentNodeToken?: string | undefined
+  /**
+   * List one page of one folder's children.
+   *
+   * This is the only read the panel needs per directory it opens, which is why
+   * it is a page rather than a walk: a folder with 300 documents costs one
+   * request until the operator asks for the next page.
+   */
+  files: (input: {
+    folderToken: string
     pageToken?: string | undefined
   }) => Promise<LarkOutcome<LarkLevel>>
+  /**
+   * List EVERY child of one folder, walking its pages.
+   *
+   * Read for one purpose: the name lookup that adopts the folder a project
+   * created before its token was recorded. It is bounded (see
+   * `CHILDREN_MAX_PAGES`) and cached briefly, because it answers a question
+   * about the archive folder rather than about a directory the operator is
+   * browsing.
+   */
+  children: (input: { folderToken: string }) => Promise<LarkOutcome<readonly LarkEntry[]>>
   /**
    * Create a Drive folder named `name` inside `parentFolderToken`.
    *
@@ -320,25 +360,56 @@ export interface LarkCli {
    * that name first. That is a deliberate product decision rather than an
    * oversight — Feishu allows two sibling folders with the same name and never
    * refuses the second, so the check could only ever be a read plus a guess; see
-   * the note on `createFolder` below for what that trades away.
+   * the note on `createFolder` below for what that trades away. The panel's own
+   * ADOPTION of an existing folder (`GET /folder`) is the other half of that
+   * decision: it looks, and offers what it found, rather than creating.
    */
   createFolder: (input: {
     parentFolderToken: string
     name: string
-  }) => Promise<LarkOutcome<LarkFolderResult>>
+  }) => Promise<LarkOutcome<LarkFolder>>
   /** Drop every cached read, so the next call reaches Feishu again. */
   invalidate: () => void
 }
 
-/** The folder one create call produced. */
-export interface LarkFolderResult {
-  /** The folder's name, as it was requested and as Feishu stored it. */
-  readonly name: string
-  /** The new folder's token, usable for uploads and links. */
-  readonly folderToken: string
-  /** Shareable URL; empty when Feishu reported none. */
-  readonly url: string
+/**
+ * Feishu's per-type browser URL for a Drive resource.
+ *
+ * The listing usually reports its own `url`, and that is preferred — it is the
+ * link Feishu itself considers canonical for the tenant. This is the fallback
+ * for the entries that omit it, and it exists here, in the host, because the
+ * per-type path layout is Feishu's vocabulary and not the panel's: the browser
+ * half only ever opens a URL it was handed.
+ *
+ * A SHORTCUT's `url` addresses its target, which is exactly what opening one
+ * should do.
+ * @param type - the entry's `type` as Feishu reported it.
+ * @param token - the entry's token.
+ * @returns an absolute Feishu URL, or `''` when the type has no known layout.
+ */
+export function feishuUrl(type: string, token: string): string {
+  const segment = ((): string => {
+    switch (type) {
+      case 'folder': return 'drive/folder'
+      case 'docx': return 'docx'
+      case 'doc': return 'docs'
+      case 'sheet': return 'sheets'
+      case 'bitable': return 'base'
+      case 'mindnote': return 'mindnotes'
+      case 'slides': return 'slides'
+      case 'file': return 'file'
+      default: return ''
+    }
+  })()
+  return segment === '' || token === '' ? '' : `${FEISHU_ORIGIN}/${segment}/${token}`
 }
+
+/**
+ * Feishu's brand-less origin: it redirects to the caller's own tenant, so a link
+ * built here opens in whichever tenant the reader is signed in to.
+ */
+const FEISHU_ORIGIN = 'https://feishu.cn'
+
 
 /**
  * Whether a path is an executable file.
@@ -418,41 +489,43 @@ function str(raw: Record<string, unknown>, key: string): string {
 }
 
 /**
- * Normalize one raw wiki node.
- * @param raw - the CLI's node record.
- * @returns the node, or undefined when it carries no usable token.
+ * Normalize one raw Drive entry.
+ *
+ * The directory question is answered HERE, once, because two shapes mean "this
+ * has children": a plain `folder`, whose own token lists it, and a `shortcut`
+ * whose target is a folder, which lists by the target's token. Collapsing them
+ * into `expandToken` is what lets the panel treat both as one kind of row.
+ * @param raw - the CLI's file record.
+ * @returns the entry, or undefined when it carries no usable token.
  */
-function toNode(raw: unknown): LarkNode | undefined {
+function toEntry(raw: unknown): LarkEntry | undefined {
   if (typeof raw !== 'object' || raw === null) return undefined
   const record = raw as Record<string, unknown>
-  const nodeToken = str(record, 'node_token')
-  if (nodeToken === '') return undefined
+  const token = str(record, 'token')
+  if (token === '') return undefined
+  const type = str(record, 'type')
+  const shortcut = typeof record['shortcut_info'] === 'object' && record['shortcut_info'] !== null
+    ? record['shortcut_info'] as Record<string, unknown>
+    : undefined
+  const targetToken = shortcut === undefined ? '' : str(shortcut, 'target_token')
+  const targetType = shortcut === undefined ? '' : str(shortcut, 'target_type')
+  const expandToken = type === 'folder'
+    ? token
+    : (type === 'shortcut' && targetType === 'folder' ? targetToken : '')
+  // A shortcut is a pointer, so its link must address the TARGET rather than the
+  // shortcut itself: opening a shortcut should open what it points at, and its
+  // target's type is what says which URL layout applies. Everything else links
+  // to itself.
+  const linkType = type === 'shortcut' && targetType !== '' ? targetType : type
+  const linkToken = type === 'shortcut' && targetToken !== '' ? targetToken : token
   return {
-    nodeToken,
-    objToken: str(record, 'obj_token'),
-    objType: str(record, 'obj_type'),
-    nodeType: str(record, 'node_type'),
-    title: str(record, 'title'),
-    hasChild: record['has_child'] === true,
-  }
-}
-
-/**
- * Normalize one raw wiki space.
- * @param raw - the CLI's space record.
- * @param fallbackId - id to use when the record omits one.
- * @returns the space, or undefined when it carries no id.
- */
-function toSpace(raw: unknown, fallbackId = ''): LarkSpace | undefined {
-  if (typeof raw !== 'object' || raw === null) return undefined
-  const record = raw as Record<string, unknown>
-  const spaceId = str(record, 'space_id') || fallbackId
-  if (spaceId === '') return undefined
-  return {
-    spaceId,
+    token,
+    expandToken,
+    type,
     name: str(record, 'name'),
-    spaceType: str(record, 'space_type'),
-    visibility: str(record, 'visibility'),
+    // Feishu reports a link for most entries; the rest get one built from their
+    // type, so the panel never has to know the layout itself.
+    url: str(record, 'url') || feishuUrl(linkType, linkToken),
   }
 }
 
@@ -472,8 +545,9 @@ export function createLarkCli(options: { log: LarkLogger }): LarkCli {
   let bin: Cached<string | undefined> | undefined
   let queue: Promise<unknown> = Promise.resolve()
   const stateCache = new Map<string, Cached<LarkState>>()
-  const spacesCache = new Map<string, Cached<readonly LarkSpace[]>>()
-  const nodesCache = new Map<string, Cached<LarkLevel>>()
+  const filesCache = new Map<string, Cached<LarkLevel>>()
+  const childrenCache = new Map<string, Cached<readonly LarkEntry[]>>()
+
 
   /**
    * Resolve the executable once per cache window.
@@ -653,104 +727,115 @@ export function createLarkCli(options: { log: LarkLogger }): LarkCli {
       }
     } else {
       // The identity is known but the profile read failed: report the user the
-      // status gave us, and let the space call below decide if this is fatal.
+      // status gave us. Nothing else in this adapter depends on the profile, so
+      // this is a warning rather than a failure.
       log.warn(`could not read the Feishu profile: ${profile.message}`)
     }
 
-    const personal = await call(
-      ['wiki', 'spaces', 'get', '--params', JSON.stringify({ space_id: PERSONAL_LIBRARY })],
-      { userIdentity: true, timeoutMs: CALL_TIMEOUT_MS },
-    )
-    // A user who is signed in but has never opened their personal library gets
-    // no space record; the panel still renders the user and lists from the
-    // default level, so that is a warning rather than a failure.
-    const space = personal.ok
-      ? toSpace((personal.value.data as { space?: unknown } | undefined)?.space, PERSONAL_LIBRARY)
-      : undefined
-    if (!personal.ok) log.warn(`could not read the personal knowledge base: ${personal.message}`)
-
-    const value: LarkState = { loggedIn: true, user, space }
+    const value: LarkState = { loggedIn: true, user }
     stateCache.set('state', { at: Date.now(), value })
     return { ok: true, value }
   }
 
-  const spaces = async (): Promise<LarkOutcome<readonly LarkSpace[]>> => {
-    const cached = spacesCache.get('spaces')
-    if (cached !== undefined && Date.now() - cached.at < SPACES_TTL_MS) return { ok: true, value: cached.value }
-    // The personal library is not in this list (Feishu's API never returns it),
-    // so it is resolved separately and put first — it is the default view.
-    const result = await call(
-      ['wiki', '+space-list', '--page-all', '--page-limit', '5'],
-      { userIdentity: true, timeoutMs: CALL_TIMEOUT_MS },
-    )
-    if (!result.ok) return result
-    const rows = (result.value.data as { spaces?: unknown[] } | undefined)?.spaces ?? []
-    const collected = rows.flatMap((row) => {
-      const space = toSpace(row)
-      return space === undefined ? [] : [space]
-    })
-    // The personal library's own name comes from its dedicated read; when that
-    // has not run yet, run it, so the roster is the same whichever route the
-    // panel happens to call first.
-    let personal = stateCache.get('state')?.value.space
-    if (personal === undefined) {
-      const header = await state()
-      personal = header.ok ? header.value.space : undefined
-    }
-    const first: LarkSpace = personal
-      ?? { spaceId: PERSONAL_LIBRARY, name: '', spaceType: 'my_library', visibility: 'private' }
-    const value = [first, ...collected.filter(space => space.spaceId !== first.spaceId)]
-    spacesCache.set('spaces', { at: Date.now(), value })
-    return { ok: true, value }
-  }
-
-  const nodes: LarkCli['nodes'] = async (input) => {
-    const { spaceId } = input
-    if (!SPACE_ID_PATTERN.test(spaceId)) {
-      return { ok: false, code: 'cli-failed', message: `not a wiki space id: ${spaceId}` }
-    }
-    const parent = input.parentNodeToken
-    if (parent !== undefined && !NODE_TOKEN_PATTERN.test(parent)) {
-      return { ok: false, code: 'cli-failed', message: `not a wiki node token: ${parent}` }
+  /**
+   * One page of one folder's children.
+   * @param input - the folder to list and the page to continue from.
+   * @returns the page, or a typed failure.
+   */
+  const files: LarkCli['files'] = async (input) => {
+    const { folderToken } = input
+    if (!DRIVE_TOKEN_PATTERN.test(folderToken)) {
+      return { ok: false, code: 'cli-failed', message: `not a Drive folder token: ${folderToken}` }
     }
     const pageToken = input.pageToken
     if (pageToken !== undefined && !PAGE_TOKEN_PATTERN.test(pageToken)) {
-      return { ok: false, code: 'cli-failed', message: 'not a wiki page token' }
+      return { ok: false, code: 'cli-failed', message: 'not a Drive page token' }
     }
 
-    const key = `${spaceId}\u0000${parent ?? ''}\u0000${pageToken ?? ''}`
-    const cached = nodesCache.get(key)
+    const key = `${folderToken}\u0000${pageToken ?? ''}`
+    const cached = filesCache.get(key)
     if (cached !== undefined && Date.now() - cached.at < NODES_TTL_MS) return { ok: true, value: cached.value }
 
+    // The native command takes its whole query in `--params` rather than in
+    // flags (see the `lark-drive` skill's reference): the JSON is built here, so
+    // no part of it can be reshaped by a caller's text.
     const result = await call([
-      'wiki', '+node-list',
-      '--space-id', spaceId,
-      ...(parent === undefined ? [] : ['--parent-node-token', parent]),
-      ...(pageToken === undefined ? [] : ['--page-token', pageToken]),
-      '--page-size', '50',
+      'drive', 'files', 'list',
+      '--params', JSON.stringify({
+        folder_token: folderToken,
+        page_size: 50,
+        ...(pageToken === undefined ? {} : { page_token: pageToken }),
+      }),
     ], { userIdentity: true, timeoutMs: CALL_TIMEOUT_MS })
     if (!result.ok) return result
 
-    const data = result.value.data as { nodes?: unknown[]; has_more?: unknown; page_token?: unknown } | undefined
-    const rows = data?.nodes ?? []
+    const data = result.value.data as {
+      files?: unknown[]
+      has_more?: unknown
+      next_page_token?: unknown
+    } | undefined
+    const rows = data?.files ?? []
     const level: LarkLevel = {
       nodes: rows.flatMap((row) => {
-        const node = toNode(row)
-        return node === undefined ? [] : [node]
+        const entry = toEntry(row)
+        return entry === undefined ? [] : [entry]
       }),
       hasMore: data?.has_more === true,
-      pageToken: typeof data?.page_token === 'string' && data.page_token !== '' ? data.page_token : undefined,
+      pageToken: typeof data?.next_page_token === 'string' && data.next_page_token !== ''
+        ? data.next_page_token
+        : undefined,
     }
-    nodesCache.set(key, { at: Date.now(), value: level })
+    filesCache.set(key, { at: Date.now(), value: level })
     return { ok: true, value: level }
+  }
+
+  /**
+   * Every child of one folder, walking its pages.
+   *
+   * Used by the name lookup that adopts an existing project folder. The walk
+   * stops at `CHILDREN_MAX_PAGES` — and says so in the log — rather than
+   * following a hostile or mistaken `has_more` forever: an adoption that missed
+   * an entry at project 2001 is a readable outcome, while an unbounded request
+   * loop against a live API is not.
+   * @param input - the folder to walk.
+   * @returns every entry the walk collected, or a typed failure.
+   */
+  const children: LarkCli['children'] = async (input) => {
+    const { folderToken } = input
+    if (!DRIVE_TOKEN_PATTERN.test(folderToken)) {
+      return { ok: false, code: 'cli-failed', message: `not a Drive folder token: ${folderToken}` }
+    }
+    const cached = childrenCache.get(folderToken)
+    if (cached !== undefined && Date.now() - cached.at < CHILDREN_TTL_MS) return { ok: true, value: cached.value }
+
+    const collected: LarkEntry[] = []
+    let pageToken: string | undefined
+    for (let page = 0; page < CHILDREN_MAX_PAGES; page += 1) {
+      const level = await files({
+        folderToken,
+        ...(pageToken === undefined ? {} : { pageToken }),
+      })
+      if (!level.ok) return level
+      collected.push(...level.value.nodes)
+      if (!level.value.hasMore || level.value.pageToken === undefined) {
+        childrenCache.set(folderToken, { at: Date.now(), value: collected })
+        return { ok: true, value: collected }
+      }
+      pageToken = level.value.pageToken
+    }
+    log.warn(`stopped walking ${folderToken} after ${String(CHILDREN_MAX_PAGES)} pages; the listing is partial`)
+    // Deliberately NOT cached: a truncated walk must not become the answer the
+    // next lookup reuses.
+    return { ok: true, value: collected }
   }
 
   /** Forget every cached read (the panel's Refresh gesture). */
   const invalidate = (): void => {
     stateCache.clear()
-    spacesCache.clear()
-    nodesCache.clear()
+    filesCache.clear()
+    childrenCache.clear()
   }
+
 
   /**
    * Create one Drive folder under a parent.
@@ -760,12 +845,13 @@ export function createLarkCli(options: { log: LarkLogger }): LarkCli {
    * Feishu Drive accepts two sibling folders with the same name and never
    * refuses the second, so a create call cannot answer "already taken" — the
    * only way to know is to LIST the parent first and compare names. This
-   * deployment decided against that read: creating the folder is the operator's
-   * intent, and the listing costs a scope (`space:document:retrieve`) that the
-   * panel's other reads do not need. The consequence is deliberate and worth
+   * deployment decided against that read on the CREATE path: creating the folder
+   * is the operator's intent, and the consequence is deliberate and worth
    * stating: if a folder of that name is already present, this creates a SECOND
    * one. Re-adding the same project therefore adds a folder, it does not reuse
-   * the first.
+   * the first. The panel's adoption path (`GET /folder`) is where an existing
+   * folder is LOOKED for instead — with the operator deciding which one a
+   * project uses.
    *
    * Everything that IS still checked is checked before any call: the parent
    * token and the name are validated here, and a name is an ARGV ELEMENT (never
@@ -776,7 +862,7 @@ export function createLarkCli(options: { log: LarkLogger }): LarkCli {
    */
   const createFolder: LarkCli['createFolder'] = async (input) => {
     const { parentFolderToken, name } = input
-    if (!FOLDER_TOKEN_PATTERN.test(parentFolderToken)) {
+    if (!DRIVE_TOKEN_PATTERN.test(parentFolderToken)) {
       return { ok: false, code: 'cli-failed', message: `not a Drive folder token: ${parentFolderToken}` }
     }
     // A name is written INTO Feishu, so an empty or control-bearing one would
@@ -805,11 +891,14 @@ export function createLarkCli(options: { log: LarkLogger }): LarkCli {
     if (token === '') {
       return { ok: false, code: 'cli-unreadable', message: `${BIN_NAME} created a folder but reported no token` }
     }
+    const reported = typeof data?.url === 'string' ? data.url : ''
     return {
       ok: true,
-      value: { name, folderToken: token, url: typeof data?.url === 'string' ? data.url : '' },
+      // The new folder's link is recorded with it, so the panel can offer
+      // "open in Feishu" even when this response carried no URL.
+      value: { name, folderToken: token, url: reported === '' ? feishuUrl('folder', token) : reported },
     }
   }
 
-  return { state, spaces, nodes, createFolder, invalidate }
+  return { state, files, children, createFolder, invalidate }
 }
