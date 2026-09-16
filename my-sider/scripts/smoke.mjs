@@ -507,16 +507,28 @@ const dictionaries = {}
  * been declared, and this plugin now chooses its home by exactly that signal.
  *
  * @param {Set<string>} declared - the slot keys this fake composition declares.
- * @returns {{ctx: object, entries: Array<object>, waited: string[]}} the context,
- * the entries it collected, and every key the plugin waited on.
+ * @returns {{ctx: object, entries: Array<object>, waited: string[], provided: object}}
+ * the context, the entries it collected, every key the plugin waited on, and
+ * every service it provided (by name).
  */
 const makeClientCtx = (declared) => {
   const entries = []
   const waited = []
+  const provided = {}
   const ctx = {
     effect(fn) {
       const dispose = fn()
       return typeof dispose === 'function' ? dispose : () => {}
+    },
+    // `ctx.reflect.provide` is how a client plugin publishes a service. The fake
+    // records it instead of registering it, which is enough for the two things
+    // asserted below: that the capability is published at all, and that the
+    // channel handed to the launcher is the one behind it.
+    reflect: {
+      provide(name, value) {
+        provided[name] = value
+        return () => Promise.resolve()
+      },
     },
     locale: {
       register(namespace, dictionary) {
@@ -537,7 +549,7 @@ const makeClientCtx = (declared) => {
       },
     },
   }
-  return { ctx, entries, waited }
+  return { ctx, entries, waited, provided }
 }
 
 // ── 1. the home this deployment has: dsh-web-ui's shared action row ────────
@@ -578,6 +590,20 @@ check('and it is told it is NOT in a row',
 check('the two homes never both hold the launcher',
   alone.waited.includes('shell.action') && entries[0].options.name !== alone.entries[0].options.name,
   alone.waited.join(' | '))
+check('the launcher is told where its open requests arrive',
+  typeof entries[0].options.inject().requests?.subscribe === 'function',
+  JSON.stringify(Object.keys(entries[0].options.inject())))
+
+// ── 1c. the capability another plugin reaches for ──────────────────────────
+// `ctx.webSidebar.open` is what `dsh-web-ui`'s document panel calls when a reader
+// clicks a Feishu link. It must both reach the mounted launcher and ANSWER, since
+// its answer is what decides between the sidebar and a plain tab.
+const sidebarFace = strip.provided['webSidebar']
+check('the plugin publishes the web-sidebar capability',
+  typeof sidebarFace?.open === 'function', JSON.stringify(Object.keys(strip.provided)))
+check('with no launcher mounted the request is refused, so the caller can fall back',
+  sidebarFace.open('https://feishu.cn/docx/doxcn1') === false)
+check('an empty address is refused too', sidebarFace.open('') === false)
 
 /**
  * Build the translator the renderer would synthesize.
@@ -597,6 +623,9 @@ const seatProps = {
   useSessions: selector => selector({ current: 'sess-1' }),
   useWorkspaces: selector => selector({ items: [{ path: process.cwd(), sessionIds: ['sess-1'] }] }),
   t: makeT(dictionaries['mysider'].zh),
+  // Exactly what this plugin's own registration injects: where it renders, and
+  // the channel another plugin's document link arrives on.
+  ...entries[0].options.inject(),
 }
 
 // The plugin's own fetches are RELATIVE, so the stub re-anchors them at the route

@@ -40,6 +40,21 @@ import { en, zh } from './locales.ts'
 import { createSelectionStore, type SelectionActions } from './project.ts'
 import { STYLES, STYLE_TAG_ID } from './styles.ts'
 
+/**
+ * Path of the host's file page, as the browser must spell it. Duplicated from
+ * `src/host/file-routes.ts` rather than imported: the two halves are separate
+ * bundles (the client one may not import host code), and a URL is a wire
+ * contract between them — the same arrangement every other route here has.
+ */
+const FILE_PAGE_PATH = '/dsh-web-ui/file'
+
+/**
+ * Marker the host's file page carries (see `src/host/file-routes.ts`). Duplicated
+ * for the same reason the path is: the two halves are separate bundles, and the
+ * marker is part of the wire contract between them.
+ */
+const FILE_PAGE_MARKER = 'dsh-web-ui-file-page'
+
 /** Services this plugin reaches for; every one must exist or the fiber waits. */
 export const inject = ['slots', 'sessions', 'workspaces', 'layout', 'locale']
 
@@ -67,6 +82,68 @@ export function apply(ctx: ClientContext): void {
   }, 'dsh-web-ui: stylesheet')
 
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-web-ui: dictionaries')
+
+  // The file page, as the capability the conversation asks before it hands a
+  // path to the editor (see the `fileViewer` declaration in contract.ts). It is
+  // answered from HERE rather than from a component because the caller is a click
+  // in someone else's tree.
+  //
+  // ANY absolute path the session named is shown, not only the ones inside a
+  // registered project: a turn that reads a file of another checkout names it, and
+  // that name is exactly what the reader clicked. The page renders text (see
+  // host/file-routes.ts), which is why that breadth costs nothing — the operator
+  // sees the file they asked for, and a script-less same-origin frame has nowhere
+  // to send it.
+  //
+  // What IS required is a sidebar to show it in: `webSidebar.open`'s own boolean
+  // answer, so a deployment without `my-sider` keeps the editor for every link.
+  // Does the host half actually serve the page yet?
+  //
+  // The two halves of this plugin update differently: this bundle reloads with the
+  // page, while the host half registers its routes only at a `dsh web` start. So a
+  // client NEWER than its host is an ordinary state — the state right after this
+  // feature is installed — and there the request would fall through to the SPA
+  // fallback and put the GUI itself inside the sidebar tab. The route is asked
+  // once, by its own marker, and until it answers every file link keeps opening in
+  // the editor exactly as it did before.
+  let filePageReady = false
+  void fetch(`${FILE_PAGE_PATH}/_?path=`, { headers: { accept: 'text/html' }, cache: 'no-store' })
+    .then(response => response.text())
+    .then((body) => { filePageReady = body.includes(FILE_PAGE_MARKER) })
+    .catch(() => {
+      // A transport failure is not an answer: stay unarmed, so links keep working.
+    })
+
+  ctx.effect(() => {
+    const disposeService = ctx.reflect.provide('fileViewer', {
+      open: (path: string): boolean => {
+        if (!filePageReady) return false
+        // The conversation resolves against the session cwd before asking, so a
+        // relative path here would mean a caller did not — refuse rather than
+        // guess a base.
+        if (!path.startsWith('/')) return false
+        const theme = document.body.hasAttribute('data-ds-dark-theme') ? 'dark' : 'light'
+        // ABSOLUTE, because the sidebar labels and persists what it is given; and
+        // the file's own name rides the PATH so a tab reads "report.md" rather
+        // than the same "/file" for every document (see host/file-routes.ts).
+        const name = encodeURIComponent(path.slice(path.lastIndexOf('/') + 1))
+        const url = `${window.location.origin}${FILE_PAGE_PATH}/${name}`
+          + `?path=${encodeURIComponent(path)}&theme=${theme}`
+        return ctx.get('webSidebar')?.open(url) ?? false
+      },
+    })
+    return () => { void disposeService() }
+  }, 'dsh-web-ui: in-GUI file viewer capability')
+
+  // `my-sider`'s docked web sidebar, as an OPTIONAL capability: a deployment
+  // without that plugin has no `ctx.webSidebar`, and every caller here falls back
+  // to opening a plain tab. Armed through `ctx.inject` for the same reason the
+  // plugin inventory is — this column must never wait on another plugin's UI.
+  let openInSidebar: ShellInjected['openInSidebar'] | undefined
+  ctx.inject(['webSidebar'], (scope: ClientContext) => {
+    openInSidebar = (url) => scope.webSidebar.open(url)
+    scope.effect(() => () => { openInSidebar = undefined }, 'dsh-web-ui: web sidebar capability')
+  })
 
   // The host's plugin inventory, as the account drawer's Plugins block reads it.
   //
@@ -126,6 +203,9 @@ export function apply(ctx: ClientContext): void {
       }
       return listPlugins()
     },
+    // `false` is the honest answer while no sidebar is armed: the caller then
+    // opens a tab, which is what a link did before this capability existed.
+    openInSidebar: (url) => openInSidebar?.(url) ?? false,
   })
 
   // One selection handle, mounted by both root-scope registrations: the column

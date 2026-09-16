@@ -73,6 +73,14 @@ export interface ShellInjected {
   /** Delete a project; its sessions fall back to the ungrouped bucket. */
   deleteWorkspace: (workspaceId: WorkspaceId) => Promise<void>
   /**
+   * Show a Feishu link inside the GUI, in `my-sider`'s docked web sidebar.
+   *
+   * @param url - the link the host built.
+   * @returns whether a sidebar took it; false means the caller should open a tab
+   * instead (no `my-sider` in this deployment, or its launcher is not mounted).
+   */
+  openInSidebar: (url: string) => boolean
+  /**
    * Read the host's own plugin inventory: one entry per non-group Loader row,
    * with its exact module specifier, its effective enablement, and the phase of
    * its root Fiber.
@@ -84,6 +92,46 @@ export interface ShellInjected {
    * empty list — "nothing is loaded" and "nobody can say" are different answers.
    */
   listPlugins: () => Promise<PluginInventorySnapshot>
+}
+
+/**
+ * The capability this plugin CONSUMES from another plugin: `my-sider`'s docked
+ * web sidebar, which can show a page inside the GUI.
+ *
+ * Declared here as well as in the plugin that provides it, for the same reason
+ * the account seats are declared twice: a client bundle may not import a peer's
+ * module (the purity gate in tsdown.config.ts), so a cordis service NAME is the
+ * whole contract between them. It is reached OPTIONALLY — a deployment without
+ * `my-sider` has no `ctx.webSidebar`, and every caller falls back to a plain tab
+ * — so this is a capability, never a dependency of the column.
+ *
+ * `open` answers whether a mounted sidebar took the request. That boolean is the
+ * point: without it a missing sidebar would turn a document click into nothing at
+ * all, which reads as a broken link.
+ */
+declare module '@deepseek-ai/cordis' {
+  interface Context {
+    webSidebar: {
+      /** Show a URL in the docked sidebar; false when no sidebar is mounted. */
+      open: (url: string) => boolean
+    }
+    /**
+     * The capability this plugin PROVIDES the other way: show a file's content
+     * inside the GUI.
+     *
+     * `ui-conversation` consumes it (see its `FileViewer` — the shape is declared
+     * on both sides for the same reason the seats are), and it is asked first
+     * whenever ANY file affordance in the transcript is clicked: a tool row's path
+     * link, a prose mention. Answering `true` means "do not hand this path to the
+     * editor"; answering `false` keeps the editor, which is what happens for a
+     * path outside every registered project, or on a deployment with no sidebar to
+     * show it in.
+     */
+    fileViewer: {
+      /** @returns whether this deployment took the path. */
+      open: (path: string) => boolean
+    }
+  }
 }
 
 /**

@@ -61,6 +61,12 @@ export interface LarkDocsPanelProps {
    * TITLE (what the sidebar shows and what the archive is searched for).
    */
   readonly project: { readonly path: string; readonly title: string } | undefined
+  /**
+   * Show a link in the GUI's web sidebar instead of a new tab, when one is
+   * mounted. Absent on a deployment without `my-sider`, and the panel then opens
+   * a tab exactly as it always did.
+   */
+  readonly openInSidebar?: ((url: string) => boolean) | undefined
 }
 
 /** One lazily loaded level of the tree, keyed by the folder token it lists. */
@@ -121,14 +127,22 @@ function messageOf(reason: unknown): string {
 }
 
 /**
- * Open one Feishu link in a new tab.
+ * Open one Feishu link: inside the GUI when a web sidebar is available, else in
+ * a new tab.
  *
- * `noopener,noreferrer` matters here: the target is a remote tenant, and the
- * panel should not hand it a handle on this window.
+ * The sidebar is preferred because a Feishu document is something a reader wants
+ * BESIDE the conversation — checking the folder while a session works in it — and
+ * `my-sider`'s panel loads it directly, so the browser's own Feishu session is
+ * what signs the page in.
+ *
+ * `noopener,noreferrer` matters for the fallback: the target is a remote tenant,
+ * and the panel should not hand it a handle on this window.
  * @param url - the link the host built.
+ * @param openInSidebar - the capability, absent on a deployment without one.
  */
-function openUrl(url: string): void {
+function openUrl(url: string, openInSidebar?: (url: string) => boolean): void {
   if (url === '') return
+  if (openInSidebar?.(url) === true) return
   window.open(url, '_blank', 'noopener,noreferrer')
 }
 
@@ -137,7 +151,7 @@ function openUrl(url: string): void {
  * @param props - the project and the copy seat.
  * @returns the panel element tree.
  */
-export function LarkDocsPanel({ t, project }: LarkDocsPanelProps): ReactNode {
+export function LarkDocsPanel({ t, project, openInSidebar }: LarkDocsPanelProps): ReactNode {
   const path = project?.path ?? ''
   const title = project?.title ?? ''
 
@@ -260,7 +274,7 @@ export function LarkDocsPanel({ t, project }: LarkDocsPanelProps): ReactNode {
    */
   const activate = (entry: LarkEntry): void => {
     if (entry.expandToken === '') {
-      openUrl(entry.url)
+      openUrl(entry.url, openInSidebar)
       return
     }
     const key = entry.expandToken
@@ -383,8 +397,9 @@ export function LarkDocsPanel({ t, project }: LarkDocsPanelProps): ReactNode {
                 t={t}
                 onActivate={() => {
                   if (expandable) activate(entry)
-                  else openUrl(entry.url)
+                  else openUrl(entry.url, openInSidebar)
                 }}
+                onOpen={() => { openUrl(entry.url, openInSidebar) }}
               />
               {open && renderLevel(entry.expandToken, depth + 1, new Set([...chain, entry.expandToken]))}
             </div>
@@ -526,7 +541,7 @@ export function LarkDocsPanel({ t, project }: LarkDocsPanelProps): ReactNode {
               data-wui="larkFolderLink"
               title={t('lark.folder.open')}
               aria-label={t('lark.folder.open')}
-              onClick={() => { openUrl(folder.url) }}
+              onClick={() => { openUrl(folder.url, openInSidebar) }}
             >
               <span data-wui="larkFolderName">
                 {folder.name.trim() === '' ? t('lark.untitled') : folder.name}
@@ -579,7 +594,7 @@ export function LarkDocsPanel({ t, project }: LarkDocsPanelProps): ReactNode {
                     data-wui="larkOpenButton"
                     aria-label={t('lark.open')}
                     title={t('lark.open')}
-                    onClick={() => { openUrl(candidate.url) }}
+                    onClick={() => { openUrl(candidate.url, openInSidebar) }}
                   >
                     <IconRightUpOutline16 size={14} />
                   </button>
@@ -612,7 +627,7 @@ export function LarkDocsPanel({ t, project }: LarkDocsPanelProps): ReactNode {
  * @param props - the entry, its depth, whether it expands, and its action.
  * @returns the row element.
  */
-function EntryRow({ entry, depth, expandable, open, onActivate, t }: {
+function EntryRow({ entry, depth, expandable, open, onActivate, onOpen, t }: {
   entry: LarkEntry
   depth: number
   /**
@@ -622,6 +637,8 @@ function EntryRow({ entry, depth, expandable, open, onActivate, t }: {
   expandable: boolean
   open: boolean
   onActivate: () => void
+  /** The row's own "open in Feishu" control; the same seam `onActivate` uses. */
+  onOpen: () => void
   t: TranslateNS<typeof NS>
 }): ReactNode {
   const name = entry.name.trim() === '' ? t('lark.untitled') : entry.name
@@ -650,7 +667,7 @@ function EntryRow({ entry, depth, expandable, open, onActivate, t }: {
         aria-label={t('lark.open')}
         title={t('lark.open')}
         disabled={entry.url === ''}
-        onClick={() => { openUrl(entry.url) }}
+        onClick={onOpen}
       >
         <IconRightUpOutline16 size={14} />
       </button>

@@ -28,6 +28,7 @@ import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import { Launcher } from './Launcher.tsx'
 import { NS } from './contract.ts'
+import { createWebSidebar } from './sidebar.ts'
 import { en, zh } from './locales.ts'
 import { STYLES, STYLE_TAG_ID } from './styles.ts'
 
@@ -62,6 +63,17 @@ export function apply(ctx: ClientContext): void {
 
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'my-sider: dictionaries')
 
+  // The capability other plugins reach for: show a URL in this sidebar. Provided
+  // here and consumed by the launcher below, because the two halves live on
+  // different sides of the React boundary (see sidebar.ts). `ctx.webSidebar.open`
+  // answers whether the mounted launcher took the request, so a caller can fall
+  // back to a plain tab instead of clicking into nothing.
+  const sidebar = createWebSidebar()
+  ctx.effect(() => {
+    const disposeService = ctx.reflect.provide('webSidebar', sidebar.face)
+    return () => { void disposeService() }
+  }, 'my-sider: web sidebar capability')
+
   // TWO registration paths, one launcher. The preferred home is the shared
   // action strip `dsh-web-ui` renders at the conversation header's right and
   // declares for exactly this (`shell.action`); the fallback is this plugin's own
@@ -90,7 +102,7 @@ export function apply(ctx: ClientContext): void {
             order: 20,
             label: 'my-sider',
             locale: NS,
-            inject: () => ({ inRow: false }),
+            inject: () => ({ inRow: false, requests: sidebar.channel }),
             registrant: 'my-sider',
           }, Launcher)
         } catch (error) {
@@ -119,7 +131,7 @@ export function apply(ctx: ClientContext): void {
           order: 20,
           label: 'my-sider',
           locale: NS,
-          inject: () => ({ inRow: true }),
+          inject: () => ({ inRow: true, requests: sidebar.channel }),
           registrant: 'my-sider',
         }, Launcher)
       } catch (error) {

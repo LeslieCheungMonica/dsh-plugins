@@ -27,11 +27,12 @@
  *
  * @module my-sider/client/Launcher
  */
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { IconCodeOutline16, IconGlobeOutline14, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { SessionId, SessionListState, WorkspaceListState, WorkspaceView } from '@deepseek-ai/dsh-client-runtime/client'
 import type { LauncherProps } from './contract.ts'
+import type { WebSidebarRequest } from './sidebar.ts'
 import { DEFAULT_HEIGHT, MAX_HEIGHT, MIN_HEIGHT, ShellPanel, readHeight } from './ShellPanel.tsx'
 import { DEFAULT_WIDTH, MAX_WIDTH_SLACK, MIN_WIDTH, WebPanel } from './WebPanel.tsx'
 
@@ -134,7 +135,7 @@ function BarButton({ label, title, active, onClick, children }: {
  * @param props - the frame's global session/workspace hooks and the translator.
  * @returns the bar and whichever panels are open.
  */
-export function Launcher({ useSessions, useWorkspaces, inRow, t }: LauncherProps): ReactNode {
+export function Launcher({ useSessions, useWorkspaces, inRow, requests, t }: LauncherProps): ReactNode {
   const [webOpen, setWebOpen] = useState(() => readFlag(OPEN_WEB_KEY))
   const [shellOpen, setShellOpen] = useState(() => readFlag(OPEN_SHELL_KEY))
   const [webWidth, setWebWidth] = useState(readWebWidth)
@@ -187,6 +188,16 @@ export function Launcher({ useSessions, useWorkspaces, inRow, t }: LauncherProps
   }, [])
 
   /**
+   * The most recent "open this in the sidebar" request from another plugin, or
+   * null while there has been none. It is state rather than a ref because the
+   * panel below has to re-act on it, and `id` is what makes two clicks on the
+   * same URL two events.
+   */
+  const [request, setRequest] = useState<WebSidebarRequest | null>(null)
+  /** The highest request id already handed to the panel. */
+  const applied = useRef(0)
+
+  /**
    * Remember a dragged command-panel height.
    * @param value - the new height in px.
    */
@@ -198,6 +209,19 @@ export function Launcher({ useSessions, useWorkspaces, inRow, t }: LauncherProps
       // A blocked localStorage is not a reason to lose the resize.
     }
   }, [])
+
+  // Another plugin's document link: open the panel and hand the address to the
+  // tabs below. `open()`'s boolean answer already told the caller whether a
+  // launcher was listening, so a request that arrives here is one this mount
+  // owns — the id guard only defends against a re-subscribe replaying one.
+  useEffect(() => {
+    return requests.subscribe((next) => {
+      if (next.id <= applied.current) return
+      applied.current = next.id
+      setRequest(next)
+      persistWeb(true)
+    })
+  }, [requests, persistWeb])
 
   // Inside the shared strip this plugin's controls cannot step aside on their
   // own: the strip is one unit and its right edge belongs to whichever plugin
@@ -249,6 +273,7 @@ export function Launcher({ useSessions, useWorkspaces, inRow, t }: LauncherProps
           t={t}
           width={webWidth}
           bottom={shellOpen ? shellHeight : 0}
+          openRequest={request}
           onWidth={resizeWeb}
           onClose={() => { persistWeb(false) }}
         />

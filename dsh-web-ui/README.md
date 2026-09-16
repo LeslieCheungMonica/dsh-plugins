@@ -110,7 +110,7 @@ every node, so nothing can go inconsistent:
 |---|---|---|---|
 | behind the current stage | filled green disc with a white check | green on both sides | plain, **已完成** |
 | **the current stage** | the same disc, a size larger, breathing a halo | green above, grey below | tinted, bold label, **运行中** |
-| ahead of the current stage | hollow grey circle (the terminal node carries a second hairline ring, so the flow's end reads as a destination) | grey on both sides | greyed out, **待开始** |
+| ahead of the current stage | hollow grey circle (the terminal node carries a second ring, so the flow's end reads as a destination) | grey on both sides | greyed out, **待开始** |
 | **the current stage, when it IS the terminal 完成** | as the current stage | — | tinted, bold **完成**, and the word is **已交付** rather than 运行中 |
 
 - **The last node is TERMINAL.** 完成 is a stage like the others — the project sits
@@ -157,7 +157,28 @@ keyboard** (it is behind the new stage, so it is locked now), and disabling the
 focused element drops focus to the page body. So a move hands the keyboard to the
 row the project moved TO — but only when focus was actually LOST. A panel that
 owns focus elsewhere (the gate card's retry button, an evidence row) keeps it,
-because those are places the operator put it.
+because those are places the operator put it. "Lost" is therefore read as *the
+element is disabled*, not merely *the body has focus*: React applies `disabled`
+during the commit while the browser blurs the control it has just disabled later,
+so the body test sees the doomed row still holding the keyboard, hands nothing on,
+and the keyboard lands on the body anyway.
+
+### Why the greys are the greys
+
+Every colour in that table is MEASURED, and three of them exist only because the
+shipped token they would otherwise use is unreadable on these surfaces — the
+unreached nodes first came out as a smudge, which is how this was found:
+
+| Part | Shipped token it would use | Measured on these cards | What it uses |
+|---|---|---|---|
+| 待开始 words (label + status) | `--dsw-alias-label-dimmed` | **1.26:1** in BOTH themes | `--dsw-alias-label-secondary` → 5.8:1 light / 8.0:1 dark |
+| 运行中 | `--dsw-alias-state-success-primary` (a FILL colour) | 2.09:1 on the light tint | `--dsh-web-ui-stage-live-text` → 5.8:1 light / 6.1:1 dark |
+| connector rail, hollow markers, the end's second ring | `--dsw-alias-border-l2` / `-l3` / `-l1` | 1.26:1 light / 1.46:1 dark | `--dsh-web-ui-stage-idle` → 3.1:1 / 3.3:1 |
+
+`--dsw-alias-label-dimmed` is for text on a FILLED surface; on a plain card it is
+close to invisible, in both themes. The floors (4.5:1 for words, 3:1 for the
+flow's unreached boundaries) are asserted by `measure-stage-tag.mjs` in both
+themes, so a token swap cannot quietly undo this.
 
 ## The FDE stage gate
 
@@ -707,6 +728,78 @@ rate would be worse than no number). When there is no current session, or a sess
 that has billed nothing, the panel says that in words: a grid of zeros reads as a
 measurement.
 
+### Feishu links open in the GUI's web sidebar
+
+Every Feishu link this plugin draws — a document row, a subfolder row, the
+project's folder strip, an ambiguous candidate, and the stage gate's evidence and
+report-folder buttons — opens **inside the GUI** when `my-sider`'s docked web
+sidebar is available, and in a new tab when it is not.
+
+The link is a *capability*, not a dependency. `my-sider` provides
+`ctx.webSidebar` on the client (the cordis service seam — a client bundle may not
+import a peer's module), and this plugin reaches it through `ctx.inject`, so a
+deployment without that plugin has no service, opens tabs, and loses nothing else.
+`openInSidebar(url)` answers whether a **mounted** sidebar took the request, and
+that boolean is the whole point of the contract: without it, a missing launcher
+would turn a document click into nothing at all, which reads as a broken link.
+
+The new tab in the sidebar loads the address **directly**, not through the relay:
+the reader is signed in to Feishu in their own browser, and only a same-site frame
+carries that session. (The relay fetches anonymously by design, so relaying a
+private document could only ever show Feishu's login page.) Chromium was measured
+not to refuse framing Feishu, which is what makes a direct frame viable here.
+
+### File names open in the GUI's web sidebar
+
+Every file name the transcript draws — a tool row's path link (Read / Write /
+Edit / any file tool) and a prose file mention alike — opens the file's
+**content** in the sidebar instead of handing it to the editor. One click, no
+window switch, and the file sits beside the conversation that named it.
+
+The transcript has exactly ONE opener for those links, and it is the DSH seam
+this feature uses:
+
+| Where | What happens |
+|---|---|
+| `ui-conversation`'s `openFile` | resolves the path against the session cwd, then asks `ctx.get('fileViewer')` — an OPTIONAL service — before falling back to `ctx.workspaces.openPath(...)`, which is the editor |
+| this plugin | provides `ctx.fileViewer`; it builds the page URL and hands it to `my-sider`'s `ctx.webSidebar` |
+| the host | serves `GET /dsh-web-ui/file/<name>?path=<absolute>&theme=<dark|light>` — the page below |
+
+**This feature needs one local change to DSH** (two files, plus a test), because
+no plugin can reach that opener: `packages/client/ui-conversation/`'s
+`src/client/apply.ts` consults the capability, and `src/client/contract/slots.ts`
+declares `FileViewer`. The shape is the same optional-service idiom the same
+function already uses for `ctx.get('chatFileMentions')`, and the fallback is
+exact: no viewer, or a viewer that answers `false`, keeps the editor for every
+link — which is what a stock DSH does.
+
+### The file page
+
+A text page and nothing else: escaped content in a `<pre>` with a line-number
+gutter, and a header naming the file, its path, size, line count and mtime.
+
+- **No script at all**, on purpose. The page is framed SAME-ORIGIN (a direct tab,
+  not a relayed one), so a page with no script is a page with no way to reach the
+  GUI's DOM — escaping is the whole security surface, and its one function has
+  its own case in the harness.
+- **It refuses work it cannot do**, with a sentence rather than an error body: a
+  missing path (400), a directory (400), a binary (415, by NUL probe), and a file
+  past the 2 MB cap (413, with its size). 20 000 lines is the render cap.
+- **The name rides the URL PATH** (`/file/report.md?path=…`), because the sidebar
+  labels a tab by its last path segment — without it every file tab would read
+  `/file`.
+- **Trust boundary**: the same one this plugin's other routes already have — a
+  browser on this machine, and a path the transcript itself named. (`/term/*`,
+  when enabled, runs arbitrary commands on the same terms.)
+- **It announces itself** with `<meta name="dsh-web-ui-file-page" content="1">`,
+  and the client capability probes for that marker before it trusts the route.
+  The two halves of this plugin update differently — the browser bundle reloads
+  with the page, the host half registers its routes only at a `dsh web` start — so
+  "new client, old host" is an ordinary state. Without the probe the missing route
+  would fall through to the SPA fallback and put the GUI ITSELF inside the sidebar
+  tab; with it, every file link simply keeps opening in the editor until the host
+  is restarted.
+
 ### 插件 — the loaded plugin list, in a modal
 
 The Plugins row (`src/client/PluginsDialog.tsx`) opens a modal that reproduces
@@ -1134,7 +1227,8 @@ matters here because this deployment's GUI sits behind the QR login gate:
 | `pnpm harness:folder-route` | the hosts's folder routes: the methods, 400s for every malformed request (a path-shaped name, an argv-shaped token, a non-http URL — none of which reach the CLI), the folder named from the request's `name` (the project's name) with the path's segment as the fallback, **exactly one create and ZERO parent-folder reads** per create (the create-only rule, asserted rather than assumed), the deployment's parent token travelling to the CLI even when the request names another, a create RECORDING the folder and a recorded folder answered with no listing at all, all four resolution outcomes (`record`/`adopted`/`missing`/`ambiguous`) including that adoption is written once and ambiguity writes nothing, the listing's page and its folder token inside the command's `--params`, and a Feishu failure — including a missing scope — answered as 200/`ok:false` |
 | `pnpm harness:folder-flow` | the browser flow: the exact request it sends (path **and** project name), that the session opens **before** the folder call, that a success leaves the sidebar strip EMPTY and announces itself through the system banner (re-announced on a repeat run), that a failure goes to the strip and NOT to the banner, every failure sentence read from the real dictionary, and that no dedup copy is reachable any more |
 | `pnpm harness:new-project-form` | the form itself, driven by clicks in jsdom: what it asks for, that opening it touches nothing, the product-card row appearing for `已有产品` and for nothing else (fed by the host's catalogue, which this harness answers), the folder field falling back to the browser on a host with no native chooser, the draft surviving that round trip, what the submission sends — and EDIT mode end to end: the prefill from the record, the read-only directory, the save reaching both `workspace.rename` and the record |
-| `pnpm harness:lark-panel` | the panel itself, driven by clicks in jsdom over mocked routes: nothing read when no project is selected, one listing per folder opened and none twice, the project's folder name as the link it opens in Feishu, documents opening in Feishu, "load more" asking for the page token the host offered, the MISSING state's create round trip (POST then re-resolve) and its pasted-link round trip, the AMBIGUOUS state offering each candidate and recording the chosen one, a shortcut that points back up its own branch rendering as a row that opens rather than a stack overflow, and a `scope-missing` refusal rendered with the scope to ask for |
+| `pnpm harness:file-route` | the file page, driven over a real socket against the real route module: that a text file renders with numbered lines and its header, that a file containing `</pre><script>` arrives as TEXT (the page's entire security surface, asserted against the raw bytes), that `escapeHtml` is that one rule, that a missing path / a directory / a binary / a file past the cap each answer with their own sentence, that the theme the GUI passed is the theme the page wears, that the decorative name segment in the URL changes nothing, and that the plugin's own `apply` registers the route under the webserver capability |
+| `pnpm harness:lark-panel` | the panel itself, driven by clicks in jsdom over mocked routes: nothing read when no project is selected, one listing per folder opened and none twice, the project's folder name as the link it opens in Feishu, documents opening in Feishu — and, with a web-sidebar capability supplied, the same clicks routing INTO the sidebar with no tab beside them, plus the fallback to a tab when the capability answers false, "load more" asking for the page token the host offered, the MISSING state's create round trip (POST then re-resolve) and its pasted-link round trip, the AMBIGUOUS state offering each candidate and recording the chosen one, a shortcut that points back up its own branch rendering as a row that opens rather than a stack overflow, and a `scope-missing` refusal rendered with the scope to ask for |
 | `pnpm harness:account-dock` | the bottom-left corner, driven by clicks in jsdom: the SEAT PROTOCOL (what owner share `sidebar.account` is handed, that the fallback identity renders when no occupant answers it, that the sign-out row comes from `sidebar.account.menu`, and that Settings is asked for the WIDE trigger rather than the rail circle), the drawer's six rows **in order**, the Usage disclosure opening and closing, the two not-yet-built rows (present, named, tooltipped, carrying an icon, announcing no dialog and no disclosure, and clicking them opening nothing and closing nothing), dismissal by a second click / Escape / a pointerdown outside, the rail expanding the column instead of opening a drawer it could not fit, the **Plugins modal** (the short-name rules; the catalogue heading, search row and count; one card per entry in host order; the phase dots; the 已启用/已停用 tags; the accessible name carrying the phase in words; the detail disclosure showing entry id + configuration + Cordis state, and only the first two for an entry with no live Fiber; the filter matching the module AND the entry id; a refusal carrying the host's own words with a retry that re-reads; an empty inventory saying so; a re-open re-reading the host; Escape closing the modal and leaving the drawer open; and a pointerdown in the page not closing the drawer while a modal is up), and — asserted without any DOM — the token arithmetic behind the Usage block: `formatTokens` at all four magnitudes, the billed-input sum of the three disjoint buckets, the cache-hit percentage and its `null` when nothing was billed, and occupancy preferring `projectedTokens` over the bare sample, falling back to it, and clamping at 100% |
 
 `harness:folder-route` drives the real `registerLarkRoutes` against a fake
@@ -1208,6 +1302,14 @@ rail tag still announces the stage it no longer spells out, that the dark theme
 re-tints the flow, and that an unreadable stored record degrades to the first stage
 and is repaired by the next click.
 
+There is also a READABILITY half, because the panel is made of words and one of
+them cannot be checked by eye from a test runner: the contrast of every stage name
+and status word against the row it sits on is computed (WCAG, a translucent
+foreground composited over its backdrop first) and floored at 4.5:1, in BOTH
+themes, along with a 3:1 floor for the flow's unreached boundaries — the rail, the
+hollow markers, and the end's second ring. That is the check the first version of
+this panel failed at 1.26:1; see [Why the greys are the greys](#why-the-greys-are-the-greys).
+
 Its server also ANSWERS THE GATE'S TWO ROUTES, per scenario, which is what makes
 the flow's second positional rule measurable end to end: that a node two steps ahead
 and a node BEHIND are both locked (the click is dispatched at the DOM, because a
@@ -1249,7 +1351,8 @@ subject comes from outside this plugin:
 - **the panel**, offline: `pnpm harness:lark-panel` renders the real component in
   jsdom with `fetch` answering the way the routes do, and drives it the way an
   operator would — nothing read when no project is selected, one listing per
-  folder opened (and none twice), documents opening in Feishu, "load more"
+  folder opened (and none twice), documents opening in Feishu or in the sidebar
+  when one is mounted, "load more"
   asking for the page the host offered, the create and paste-a-link round trips,
   choosing between several same-named folders, a shortcut that points back up its
   own branch rendering as a row that opens rather than a stack overflow, and a

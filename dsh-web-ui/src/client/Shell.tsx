@@ -94,7 +94,7 @@ export function Shell(props: ShellProps): ReactNode {
     collapsed, width, renderSlot, t,
     useSessions, useWorkspaces, useStore, actions,
     startSession, toggleSidebar, listDirectory, createDirectory,
-    selectProject, renameWorkspace, deleteWorkspace, listPlugins,
+    selectProject, renameWorkspace, deleteWorkspace, listPlugins, openInSidebar,
   } = props
 
   // Wide content stays mounted while the collapse animates, unmounts at
@@ -258,6 +258,7 @@ export function Shell(props: ShellProps): ReactNode {
         scopePath={selected?.path}
         scopeLabel={selected?.title}
         rail={rail}
+        openInSidebar={openInSidebar}
         t={t}
       />
 
@@ -322,6 +323,7 @@ export function Shell(props: ShellProps): ReactNode {
                 project={selected === undefined
                   ? undefined
                   : { path: selected.path, title: selected.title }}
+                openInSidebar={openInSidebar}
               />
             </div>
           </>

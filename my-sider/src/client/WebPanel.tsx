@@ -45,6 +45,7 @@ import {
 import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 import type { RelayProbe } from '../shared/wire.ts'
 import { probeUrl, relaySrc } from './api.ts'
+import type { WebSidebarRequest } from './sidebar.ts'
 import type { NS } from './contract.ts'
 
 /** The persisted tab list key. */
@@ -186,6 +187,11 @@ export interface WebPanelProps {
   readonly width: number
   /** Height reserved at the bottom for the command panel, in px (0 when closed). */
   readonly bottom: number
+  /**
+   * An address another plugin asked this sidebar to show, or null. Each request
+   * carries its own id, so the panel re-acts even when the address repeats.
+   */
+  readonly openRequest: WebSidebarRequest | null
   /** Report a new width from a drag. */
   readonly onWidth: (width: number) => void
   /** Close the sidebar. */
@@ -197,7 +203,7 @@ export interface WebPanelProps {
  * @param props - the translator, geometry, and the close action.
  * @returns the portal-mounted panel.
  */
-export function WebPanel({ t, width, bottom, onWidth, onClose }: WebPanelProps): ReactNode {
+export function WebPanel({ t, width, bottom, openRequest, onWidth, onClose }: WebPanelProps): ReactNode {
   const [tabs, setTabs] = useState<readonly Tab[]>(readTabs)
   // Deliberately empty: `activeId` only ever carries an explicit choice, and the
   // render below falls back to the first tab — which is what makes a stale id
@@ -302,6 +308,31 @@ export function WebPanel({ t, width, bottom, onWidth, onClose }: WebPanelProps):
     setActiveId(tab.id)
     setError(null)
   }, [])
+
+  // A URL another plugin asked for. It REUSES a tab already showing that address
+  // rather than piling up a second one: clicking the same document twice is one
+  // intention, and the reader's back trail in that tab is worth keeping. The
+  // effect keys on the request id (not the URL) so a repeat still re-focuses, and
+  // reads `tabs` from this render's closure — it runs in the commit that a new
+  // request caused, so that value is current by construction.
+  useEffect(() => {
+    if (openRequest === null) return
+    const existing = tabs.find(tab => tab.url === openRequest.url)
+    if (existing !== undefined) {
+      setActiveId(existing.id)
+      setError(null)
+      return
+    }
+    // Direct loading on purpose: the caller is a link to a site the READER is
+    // signed in to (a Feishu document), and only a same-site frame carries their
+    // session. The relay fetches anonymously by design, so it could only ever
+    // show that site's login page.
+    const tab = newTab(openRequest.url, 'direct')
+    setTabs(previous => [...previous, tab])
+    setActiveId(tab.id)
+    setError(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the request, see above
+  }, [openRequest])
 
   /**
    * Close one tab, keeping at least one alive.

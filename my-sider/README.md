@@ -72,6 +72,35 @@ Both open flags, the sidebar width, the panel height, the tab list, and the
 working-directory override are persisted in `localStorage`, so a reload comes
 back to the same workspace.
 
+### Other plugins can open a page in this sidebar
+
+The sidebar is published as a client capability: `ctx.webSidebar.open(url)` shows
+an address in the docked panel, opening it if it is closed. `dsh-web-ui` is the
+caller today — every Feishu link its document panel and stage-gate dialog draw
+goes through it, so a reader reads the document beside the conversation instead of
+in another tab.
+
+Two properties make it safe to depend on:
+
+- **It answers.** `open` returns whether a MOUNTED launcher took the request. A
+  capability that silently does nothing would turn a document click into a dead
+  link, so the caller falls back on `false` and opens a tab. Requests that arrive
+  with nothing listening are reported untaken rather than buffered — a buffer
+  would deliver a stranger's click into a later mount.
+- **It is optional, both ways.** A deployment without this plugin has no
+  `ctx.webSidebar` at all and the caller simply opens tabs; a deployment with it
+  but with the launcher unmounted gets `false` for the same reason.
+
+The panel adds the address as a **direct** tab, not a relayed one: the point of
+the feature is a site the reader is already signed in to, and only a same-site
+frame carries that session.
+
+`dsh-web-ui` opens two kinds of address through it today: a Feishu document (its
+own document panel and stage-gate dialog) and a source file of the current
+project (the transcript's file links). It also labels each tab by the LAST path
+segment of the address, so a page that wants a readable tab should carry its name
+in the URL path rather than in a query.
+
 ## The web sidebar
 
 Every tab is one address, shown in an `<iframe>`. There are exactly two ways to

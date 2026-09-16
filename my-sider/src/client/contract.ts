@@ -23,6 +23,29 @@
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import type { MySiderKey } from './locales.ts'
+import type { WebSidebarChannel, WebSidebarFace } from './sidebar.ts'
+
+/**
+ * The capability this plugin PROVIDES for other plugins: open a URL in the docked
+ * web sidebar.
+ *
+ * A cordis service, because that is the sanctioned way for one plugin to reach
+ * another's VALUE (a client bundle may not import a peer's module — see the
+ * purity rule in `dsh-web-ui`'s tsdown config), and because a caller must be able
+ * to ask for it OPTIONALLY: a deployment without this plugin simply has no
+ * `ctx.webSidebar`, and the caller falls back to opening a tab.
+ *
+ * Declared here on the client `Context` so both halves of this plugin — the
+ * `apply` that provides it and the launcher that subscribes — agree on the shape
+ * without a shared runtime value.
+ */
+declare module '@deepseek-ai/cordis' {
+  interface Context {
+    webSidebar: WebSidebarFace
+  }
+}
+
+export type { WebSidebarFace }
 
 /** Dictionary namespace owned by this plugin. */
 export const NS = 'mysider'
@@ -66,7 +89,8 @@ export interface ShellActionOwnerProps {
 
 /**
  * Composed props of the launcher: the frame's global session/workspace hooks,
- * this plugin's injected placement fact, and the typed `t` seat.
+ * this plugin's injected placement fact and sidebar channel, and the typed `t`
+ * seat.
  *
  * The injected face carries only whether the launcher renders INSIDE the shared
  * strip or as its own pinned bar. That difference is geometry the component
@@ -81,4 +105,8 @@ export interface ShellActionOwnerProps {
 export type LauncherProps =
   & PropsRuntime<'shell.overlay'>
   & PropsLocale<typeof NS>
-  & { readonly inRow: boolean }
+  & {
+    readonly inRow: boolean
+    /** Where another plugin's "open this in the sidebar" requests arrive. */
+    readonly requests: WebSidebarChannel
+  }

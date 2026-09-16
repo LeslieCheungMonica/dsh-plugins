@@ -293,6 +293,10 @@ function readState() {
       node: {
         fill: getComputedStyle(node).backgroundColor,
         border: Number.parseFloat(getComputedStyle(node).borderTopWidth),
+        // The colour of that border, and of the destination ring: the flow's
+        // unreached parts are semi-transparent greys, so their readability is a
+        // property of what they are painted OVER (see checkReadable).
+        borderColor: getComputedStyle(node).borderTopColor,
         // The node's centre from the row's own left edge: the rail must be
         // centred on exactly this x, and the CSS derives it from the marker cell.
         centre: dot.left + dot.width / 2 - box.left,
@@ -447,11 +451,85 @@ async function answerManual(page, which) {
 }
 
 /**
+ * WCAG relative-luminance contrast between two CSS colours.
+ *
+ * A translucent foreground is composited over the background first, because that
+ * is what the browser paints: the connector rail and the unreached markers are
+ * deliberately semi-transparent greys, so their readability is a property of the
+ * RESULT rather than of the token.
+ * @param foreground - an `rgb()`/`rgba()` string.
+ * @param background - the opaque colour behind it.
+ * @returns the ratio, 1 (identical) to 21 (black on white).
+ */
+function contrast(foreground, background) {
+  const parse = css => (css.match(/[\d.]+/g) ?? []).map(Number)
+  const linear = (value) => {
+    const channel = value / 255
+    return channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4
+  }
+  const luminance = ([r, g, b]) => 0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b)
+  const back = parse(background)
+  const front = parse(foreground)
+  const alpha = front[3] ?? 1
+  const painted = [0, 1, 2].map(index => front[index] * alpha + back[index] * (1 - alpha))
+  const [lighter, darker] = [luminance(painted), luminance(back)].sort((a, b) => b - a)
+  return (lighter + 0.05) / (darker + 0.05)
+}
+
+/** Parse a computed colour into channels. */
+function toRgb(css) {
+  const [r, g, b] = (css.match(/[\d.]+/g) ?? []).map(Number)
+  return { r, g, b }
+}
+
+/** The colour a row paints behind its own words. */
+const rowBackdrop = (row, card) => (row.rowFill === 'rgba(0, 0, 0, 0)' ? card : row.rowFill)
+
+/**
+ * The readability invariant of a flow made of WORDS.
+ *
+ * This is the check the first version of the panel would have failed, and the one
+ * that came back as an operator report rather than as a red test: the grey "not
+ * started" nodes used `--dsw-alias-label-dimmed`, a token meant for text on a
+ * FILLED surface, which measures 1.26:1 on these cards in BOTH themes — the stage
+ * names were a smudge. The floors are asserted instead of colours, so re-theming
+ * stays free and going unreadable does not.
+ * @param name - the scenario's label.
+ * @param data - what the browser reported.
+ */
+function checkReadable(name, data) {
+  const card = data.panel.fill
+  const labels = data.rows.map(row => contrast(row.labelColor, rowBackdrop(row, card)))
+  const statuses = data.rows.map(row => contrast(row.statusColor, rowBackdrop(row, card)))
+  check(`${name}: every stage name is readable (>= 4.5:1, WCAG AA)`,
+    Math.min(...labels) >= 4.5, labels.map(value => value.toFixed(2)).join(', '))
+  check(`${name}: every status word is readable (>= 4.5:1, WCAG AA)`,
+    Math.min(...statuses) >= 4.5, statuses.map(value => value.toFixed(2)).join(', '))
+  // The parts of the flow that are NOT reached — the rail and the hollow markers.
+  // Not text, so the floor is a UI boundary's 3:1; a floor all the same, because
+  // the hairlines they used to be drawn with measured 1.26:1 light / 1.46:1 dark.
+  const idleLines = data.rows
+    .flatMap(row => [row.above, row.below].map(line => ({ line, row })))
+    .filter(({ line }) => line.display !== 'none' && !isGreen(toRgb(line.line)))
+    .map(({ line, row }) => contrast(line.line, rowBackdrop(row, card)))
+  const idleMarkers = data.rows
+    .filter(row => row.state === 'pending')
+    .map(row => contrast(row.node.borderColor, rowBackdrop(row, card)))
+  check(`${name}: the unreached rail is visible (>= 3:1)`,
+    idleLines.length > 0 && Math.min(...idleLines) >= 3,
+    idleLines.map(value => value.toFixed(2)).join(', '))
+  check(`${name}: the hollow unreached markers are visible (>= 3:1)`,
+    idleMarkers.length > 0 && Math.min(...idleMarkers) >= 3,
+    idleMarkers.map(value => value.toFixed(2)).join(', '))
+}
+
+/**
  * Assert one stage's rendering against the flow model in `stage.ts`.
  * @param name - the scenario's label.
  * @param stage - the seeded stage index.
  * @param data - what the browser reported.
- */function checkModel(name, stage, data) {
+ */
+function checkModel(name, stage, data) {
   const labels = STAGE_KEYS.map(key => zh[key])
   check(`${name}: all six stages render, in delivery order`,
     JSON.stringify(data.rows.map(row => row.label)) === JSON.stringify(labels),
@@ -489,6 +567,7 @@ async function answerManual(page, which) {
   check('the flow starts and ends at a node: no rail above the first or below the last',
     first.above.display === 'none' && last.below.display === 'none',
     `${first.above.display} / ${last.below.display}`)
+  checkReadable('stage 1', data)
   /* The flow's END is PAINTED differently while it is still ahead: a second
      hairline ring, which is what makes 完成 read as the destination the line runs
      to rather than as one more step. Sampled just OUTSIDE the marker, where an
@@ -1118,6 +1197,8 @@ async function answerManual(page, which) {
     }
     return {
       ring: centre(ring),
+      // The surface the ring's unreached share is painted ON: the column's fill.
+      columnFill: getComputedStyle(document.querySelector('[data-wui="column"]')).backgroundColor,
       nodes: rows.map(row => centre(row.querySelector('[data-wui="stageNode"]'))),
       rows: rows.map(row => {
         const box = row.getBoundingClientRect()
@@ -1141,6 +1222,16 @@ async function answerManual(page, which) {
   const railBelow = at(geometry.rows[2].left + 20, (geometry.nodes[2].y + geometry.nodes[3].y) / 2)
   check('the rail is painted green into the running node and grey out of it',
     isGreen(railAbove) && !isGreen(railBelow), `${show(railAbove)} vs ${show(railBelow)}`)
+
+  // The greys, as PAINTED, against the surfaces they are painted on — the same
+  // floors the computed-style check applies in both themes (see checkReadable).
+  // This is the half that catches a token which resolves fine and blends away.
+  const bareRing = contrast(show(ringBare), geometry.columnFill)
+  const idleRail = contrast(show(railBelow), data.panel.fill)
+  check('the unreached share of the ring is painted, not blended away (>= 3:1)',
+    bareRing >= 3, `${show(ringBare)} on ${geometry.columnFill} = ${bareRing.toFixed(2)}:1`)
+  check('the grey rail is painted, not blended away (>= 3:1)',
+    idleRail >= 3, `${show(railBelow)} on ${data.panel.fill} = ${idleRail.toFixed(2)}:1`)
 
   // A reached node: a green disc...
   const disc = at(geometry.nodes[0].x, geometry.nodes[0].y - 6)
@@ -1192,6 +1283,10 @@ async function answerManual(page, which) {
   check('the dark theme re-tints the flow rather than reusing the light colours',
     dark.tint !== light.tint && dark.panel !== light.panel && dark.label !== light.label,
     `light ${light.tint} / ${light.panel} / ${light.label} → dark ${dark.tint} / ${dark.panel} / ${dark.label}`)
+  // The same invariant, re-measured in the theme it was reported in: a grey that
+  // reads on white can collapse into the card on a dark surface, which is exactly
+  // how the unreached nodes became unreadable (1.26:1 in BOTH themes).
+  checkReadable('dark theme', await page.evaluate(readState))
   await page.screenshot({ path: new URL('./stage-tag-dark.png', import.meta.url).pathname })
   await page.close()
 }

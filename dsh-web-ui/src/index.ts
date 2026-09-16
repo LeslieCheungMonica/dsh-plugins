@@ -38,6 +38,7 @@ import type {} from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-sandbox'
 import type {} from '@deepseek-ai/dsh-sandbox-policy'
 import type {} from '@deepseek-ai/dsh-subprocess'
+import { registerFileRoutes } from './host/file-routes.ts'
 import { registerGitRoutes } from './host/git-routes.ts'
 import { registerLarkRoutes } from './host/routes.ts'
 import { createTerminalService, readTerminalOptions } from './host/term.ts'
@@ -63,6 +64,9 @@ export function apply(ctx: Context, config?: unknown): void {
   ctx.inject(['webServer'], (httpCtx) => {
     registerLarkRoutes(httpCtx)
     registerGitRoutes(httpCtx)
+    // The file page a transcript's file link opens in the GUI (see
+    // host/file-routes.ts and the client's `fileViewer` capability).
+    registerFileRoutes(httpCtx)
   })
 
   // Validated here, at boot, so a bad value fails loudly with the field named

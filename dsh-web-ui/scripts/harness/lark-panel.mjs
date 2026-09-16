@@ -82,6 +82,16 @@ globalThis.fetch = async (url, init) => {
 }
 dom.window.open = (url) => { opened.push(url); return null }
 
+/**
+ * The web-sidebar capability the panel is handed (`dsh-web-ui`'s
+ * `openInSidebar`). `sidebarTakes` decides its answer, which is the whole point
+ * of the seam: the panel must open a tab when NO sidebar mounted, and must not
+ * when one did.
+ */
+const sidebarCalls = []
+let sidebarTakes = true
+const openInSidebar = (url) => { sidebarCalls.push(url); return sidebarTakes }
+
 const root = createRoot(document.getElementById('root'))
 
 /** Let the panel's promises settle (a request, a state update, a re-render). */
@@ -93,9 +103,9 @@ const settle = async () => {
  * Render the panel and wait for its first round of reads.
  * @param project - the project to scope it to, or undefined for none.
  */
-async function render(project) {
+async function render(project, openInSidebar) {
   await act(async () => {
-    root.render(createElement(LarkDocsPanel, { t, project }))
+    root.render(createElement(LarkDocsPanel, { t, project, openInSidebar }))
     await settle()
   })
 }
@@ -107,13 +117,14 @@ async function render(project) {
  * because a test rewrote the host's answers — so a case that wants new answers
  * starts from a fresh mount, which is also what a page reload does.
  * @param project - the project to scope it to.
+ * @param openInSidebar - the web-sidebar capability, when the case supplies one.
  */
-async function remount(project = PROJECT) {
+async function remount(project = PROJECT, openInSidebar) {
   await act(async () => {
-    root.render(createElement(LarkDocsPanel, { t, project: undefined }))
+    root.render(createElement(LarkDocsPanel, { t, project: undefined, openInSidebar }))
     await settle()
   })
-  await render(project)
+  await render(project, openInSidebar)
 }
 
 /** Text of every element matching a selector. */
@@ -420,6 +431,48 @@ check('a refusal is rendered with the scope to ask for',
 check('a refused resolution lists nothing',
   to('/dsh-web-ui/lark/files').length === 0,
   JSON.stringify(requests.map(entry => entry.url)))
+
+// 8. The web-sidebar capability: a Feishu link goes INTO the GUI when a sidebar
+//    is mounted, and falls back to a tab when none is. The panel must not decide
+//    that for itself — it asks, and acts on the answer.
+routes = resolvedHost({
+  files: {
+    [FOLDER]: {
+      ok: true,
+      nodes: [
+        { token: 'doxcn1', expandToken: '', type: 'docx', name: '总体方案', url: 'https://feishu.cn/docx/doxcn1' },
+      ],
+      hasMore: false,
+      pageToken: null,
+    },
+  },
+})
+reset()
+sidebarCalls.length = 0
+sidebarTakes = true
+await remount(PROJECT, openInSidebar)
+await clickText('[data-wui="larkRowMain"]', '总体方案')
+check('with a sidebar mounted, a document row goes to the sidebar',
+  sidebarCalls.length === 1 && sidebarCalls[0] === 'https://feishu.cn/docx/doxcn1',
+  JSON.stringify(sidebarCalls))
+check('and no tab is opened beside it', opened.length === 0, JSON.stringify(opened))
+await click('[data-wui="larkFolderLink"]')
+check('the folder link takes the same route',
+  sidebarCalls.length === 2 && sidebarCalls[1] === `https://feishu.cn/drive/folder/${FOLDER}`,
+  JSON.stringify(sidebarCalls))
+
+// The same panel, a deployment with no `my-sider`: the capability answers false
+// and the link must open a tab — a click that does nothing reads as a dead link.
+reset()
+sidebarCalls.length = 0
+sidebarTakes = false
+await remount(PROJECT, openInSidebar)
+await clickText('[data-wui="larkRowMain"]', '总体方案')
+check('with no sidebar mounted, the link still opens a tab',
+  opened.length === 1 && opened[0] === 'https://feishu.cn/docx/doxcn1', JSON.stringify(opened))
+check('and the capability was asked first',
+  sidebarCalls.length === 1 && sidebarCalls[0] === 'https://feishu.cn/docx/doxcn1',
+  JSON.stringify(sidebarCalls))
 
 let failed = 0
 for (const entry of results) {

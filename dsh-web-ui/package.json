@@ -36,7 +36,8 @@
     "harness:folder-flow": "node scripts/harness/tsdown.mjs && node scripts/harness/folder-flow.mjs",
     "harness:new-project-form": "node scripts/harness/tsdown.mjs && node scripts/harness/new-project-form.mjs",
     "harness:lark-panel": "node scripts/harness/tsdown.mjs && node scripts/harness/lark-panel.mjs",
-    "harness:account-dock": "node scripts/harness/tsdown.mjs && node scripts/harness/account-dock.mjs"
+    "harness:account-dock": "node scripts/harness/tsdown.mjs && node scripts/harness/account-dock.mjs",
+    "harness:file-route": "node scripts/harness/file-route.mjs"
   },
   "devDependencies": {
     "tsdown": "^0.22.2",

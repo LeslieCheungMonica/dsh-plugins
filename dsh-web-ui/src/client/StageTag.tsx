@@ -88,7 +88,7 @@ const UNPLACED: CSSProperties = { visibility: 'hidden', left: 0, top: 0 }
  * @param props - the project scope, its directory, the rail flag, and the copy seat.
  * @returns the tag, its portaled panel, and the gate dialog a gated click opens.
  */
-export function StageTag({ scopeKey, scopePath, scopeLabel, rail, t }: {
+export function StageTag({ scopeKey, scopePath, scopeLabel, rail, openInSidebar, t }: {
   /**
    * The project this tag reports on — its workspace id. The stage is that
    * project's own fact, so this is also the persistence key; while no project is
@@ -107,6 +107,8 @@ export function StageTag({ scopeKey, scopePath, scopeLabel, rail, t }: {
   scopeLabel?: string | undefined
   /** Rail layout: the tag shrinks to the ring alone (see the stylesheet). */
   rail: boolean
+  /** Show a Feishu link in the GUI's web sidebar when one is mounted (see StageGateDialog). */
+  openInSidebar?: ((url: string) => boolean) | undefined
   t: T
 }): ReactNode {
   const [stage, setStage] = useState(() => readStage(scopeKey))
@@ -209,12 +211,21 @@ export function StageTag({ scopeKey, scopePath, scopeLabel, rail, t }: {
   // button, and disabling the focused element drops focus to the page body — so
   // the operator's next Tab would restart at the top of the document, outside the
   // panel they are looking at. A move therefore hands the keyboard to the row the
-  // project moved TO. It only does so when focus was LOST (the body has it): a
-  // panel that owns focus somewhere else keeps it.
+  // project moved TO. It only does so when focus was LOST: a panel that owns focus
+  // somewhere else keeps it.
+  //
+  // Why `disabled` is checked and not just "is it the body": at this point the
+  // keyboard is usually still ON the row that is being disabled. React applies the
+  // disabled property during the commit, and the browser blurs the control it has
+  // just disabled LATER — so reading `activeElement` alone finds the doomed row
+  // still holding focus, hands nothing on, and the keyboard ends up on the body
+  // anyway. The element that IS reachable and WOULD disappear is the one to check.
   useEffect(() => {
     if (!open) return
     const active = document.activeElement
-    if (active !== null && active !== document.body) return
+    const lost = active === null || active === document.body
+      || (active instanceof HTMLButtonElement && active.disabled)
+    if (!lost) return
     panelRef.current?.querySelector<HTMLElement>('[aria-current="step"]')?.focus()
   }, [stage, open])
 
@@ -351,6 +362,7 @@ export function StageTag({ scopeKey, scopePath, scopeLabel, rail, t }: {
         path={scopePath ?? ''}
         to={gateTo ?? DEFAULT_STAGE}
         onPassed={() => { if (gateTo !== null) advance(gateTo) }}
+        openInSidebar={openInSidebar}
         onClose={() => {
           const closed = gateTo
           setGateTo(null)

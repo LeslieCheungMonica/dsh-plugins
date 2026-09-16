@@ -59,7 +59,7 @@ type T = TranslateNS<typeof NS>
  * @param props - whether it is open, the project and stage, the two exits, and the copy seat.
  * @returns the overlay, or null while closed.
  */
-export function StageGateDialog({ open, path, to, onPassed, onClose, t }: {
+export function StageGateDialog({ open, path, to, onPassed, onClose, openInSidebar, t }: {
   /** Whether the dialog is showing. */
   open: boolean
   /**
@@ -74,6 +74,12 @@ export function StageGateDialog({ open, path, to, onPassed, onClose, t }: {
   onPassed: () => void
   /** Called on Escape, the mask, Cancel, or the close button. */
   onClose: () => void
+  /**
+   * Show a Feishu link in the GUI's web sidebar instead of a new tab, when one is
+   * mounted. Absent on a deployment without `my-sider`, and evidence then opens a
+   * tab exactly as it always did.
+   */
+  openInSidebar?: ((url: string) => boolean) | undefined
   t: T
 }): ReactNode {
   const [report, setReport] = useState<StageGateReport | null>(null)
@@ -311,7 +317,7 @@ export function StageGateDialog({ open, path, to, onPassed, onClose, t }: {
                             type="button"
                             data-wui="gateEvidence"
                             title={item.evidence.path}
-                            onClick={() => { openUrl(item.evidence?.url ?? '') }}
+                            onClick={() => { openUrl(item.evidence?.url ?? '', openInSidebar) }}
                           >
                             {item.evidence.name}
                           </button>
@@ -405,7 +411,7 @@ export function StageGateDialog({ open, path, to, onPassed, onClose, t }: {
             <button
               type="button"
               data-wui="gateFolder"
-              onClick={() => { openUrl(report.folder?.url ?? '') }}
+              onClick={() => { openUrl(report.folder?.url ?? '', openInSidebar) }}
             >
               {t('stageGate.folder')}
             </button>
@@ -439,10 +445,17 @@ export function StageGateDialog({ open, path, to, onPassed, onClose, t }: {
 }
 
 /**
- * Open one Feishu link in a new tab.
+ * Open one Feishu link: inside the GUI when a web sidebar is available, else in a
+ * new tab.
+ *
+ * The sidebar is preferred here for the same reason it is in the document panel:
+ * a gate's evidence and its report folder are things a reader checks BESIDE the
+ * checklist they are filling in, and `my-sider`'s panel loads them directly, so
+ * the browser's own Feishu session signs the page in.
  * @param url - the link the host built.
+ * @param openInSidebar - the capability, absent on a deployment without one.
  */
-function openUrl(url: string): void {
+function openUrl(url: string, openInSidebar?: (url: string) => boolean): void {
   if (url === '') return
   window.open(url, '_blank', 'noopener,noreferrer')
 }

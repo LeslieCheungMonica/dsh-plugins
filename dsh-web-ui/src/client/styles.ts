@@ -47,17 +47,42 @@ html body[data-ds-dark-theme] {
   --dsh-web-ui-accent-soft: rgba(90, 140, 246, 0.18);
 }
 
-/* The FDE flow's own green (see stage.ts). It is declared HERE, on the page
+/* The FDE flow's own colours (see stage.ts). They are declared HERE, on the page
    root, and not on the column like the other --dsh-web-ui-* values: the flow
-   panel is portaled to the page body (the column clips its own overflow, so
-   the panel cannot live inside it), and a custom property set on the column
-   would not reach it. The halo is a pair — on and off — because a keyframe
-   cannot interpolate to transparent: green's own transparent is used instead,
-   which is what keeps the pulse from fading through grey. */
+   panel is portaled to the page body (the column clips its own overflow, so the
+   panel cannot live inside it), and a custom property set on the column would not
+   reach it.
+
+   THREE of them exist only because the shipped tokens they would otherwise use
+   are unreadable on these surfaces, which is worth stating so nobody "simplifies"
+   them back:
+
+   - --dsh-web-ui-stage-live-text — the word 运行中. --dsw-alias-state-success-
+     primary is a FILL colour: as text on the light panel and on its own green
+     tint it measures 2.09:1. This is the same green, dark enough to read.
+   - --dsh-web-ui-stage-idle — the connector rail and the hollow unreached node.
+     --dsw-alias-border-l2 is a hairline: measured against these cards it is
+     1.26:1 (light) and 1.46:1 (dark), i.e. the parts of the flow that are NOT
+     reached were effectively invisible. Raised to a boundary the eye can follow
+     (>= 3:1 in both themes).
+   - the halo is a pair — on and off — because a keyframe cannot interpolate to
+     transparent: green's own transparent is used instead, which is what keeps
+     the pulse from fading through grey.
+
+   Every value here was chosen by measuring, and measure-stage-tag.mjs asserts
+   the resulting contrast ratios in both themes so they cannot drift back. */
 html body {
   --dsh-web-ui-stage-on-solid: #ffffff;
   --dsh-web-ui-stage-halo: rgba(34, 197, 94, 0.3);
   --dsh-web-ui-stage-halo-off: rgba(34, 197, 94, 0);
+  --dsh-web-ui-stage-live-text: rgb(20, 110, 55);
+  --dsh-web-ui-stage-idle: rgba(15, 17, 21, 0.46);
+  --dsh-web-ui-stage-idle-soft: rgba(15, 17, 21, 0.22);
+}
+html body[data-ds-dark-theme] {
+  --dsh-web-ui-stage-live-text: var(--dsw-static-green-400);
+  --dsh-web-ui-stage-idle: rgba(255, 255, 255, 0.4);
+  --dsh-web-ui-stage-idle-soft: rgba(255, 255, 255, 0.22);
 }
 `
 
@@ -367,7 +392,7 @@ const SHELL = `
   border-radius: 50%;
   background: conic-gradient(
     var(--dsw-alias-state-success-primary) var(--wui-stage-fill, 16.667%),
-    var(--dsw-alias-border-l2) 0
+    var(--dsh-web-ui-stage-idle) 0
   );
   -webkit-mask: radial-gradient(circle closest-side, transparent 72%, #000 76%);
   mask: radial-gradient(circle closest-side, transparent 72%, #000 76%);
@@ -516,7 +541,7 @@ const SHELL = `
   position: absolute;
   left: var(--wui-stage-rail);
   width: 2px;
-  background: var(--dsw-alias-border-l2);
+  background: var(--dsh-web-ui-stage-idle);
   pointer-events: none;
 }
 
@@ -607,9 +632,10 @@ const SHELL = `
 /* Ahead: an empty circle, deliberately with no fill of its own — the line stops
    short of it, so the panel's own surface is what shows through. */
 [data-wui='stageRow'][data-state='pending'] [data-wui='stageNode'] {
-  /* Lighter than the reached disc on purpose: an unreached node is a place in
-     the flow, not a piece of work that is under way. */
-  border: 1.5px solid var(--dsw-alias-border-l2);
+  /* Hollow rather than filled, so "no work here yet" reads at a glance — but
+     drawn in the same idle grey as the rail, which is a boundary, not a hairline
+     (see the token block: the hairline measured 1.26:1). */
+  border: 1.5px solid var(--dsh-web-ui-stage-idle);
 }
 
 /* The flow's END, while it is still ahead: a second hairline ring around the
@@ -618,8 +644,12 @@ const SHELL = `
    already a filled disc with a check — and because the running node's halo is a
    box-shadow too, which the pulse animation owns. */
 [data-wui='stageRow'][data-final='true'][data-state='pending'] [data-wui='stageNode'] {
-  border-color: var(--dsw-alias-border-l3);
-  box-shadow: 0 0 0 2px var(--dsw-alias-border-l1);
+  /* Two rings, BOTH in the flow's idle grey. The shipped hairlines this used to
+     draw with measure 1.26:1 (light) and 1.66:1 (dark) — which made the flow's
+     destination the LEAST visible node on the card. The outer ring is the softer
+     of the two greys, so the emphasis reads as a ring and not as a heavier node. */
+  border-color: var(--dsh-web-ui-stage-idle);
+  box-shadow: 0 0 0 2px var(--dsh-web-ui-stage-idle-soft);
 }
 
 /* Running: the node breathes. The halo starts at the node's own edge and fades
@@ -649,11 +679,14 @@ const SHELL = `
   font-size: 11px;
 }
 
-/* Ahead of the flow: grey words. Behind it: ordinary text, because finished
-   work is not dimmed — it is what the operator has. */
+/* Ahead of the flow: grey words. Behind it: ordinary text, because finished work
+   is not dimmed — it is what the operator has. The grey is label-secondary
+   (5.8:1 light, 8.0:1 dark) and NOT label-dimmed: that token is for text on a
+   FILLED surface, and on these cards it measures 1.26:1 in both themes — the
+   stage names were unreadable. */
 [data-wui='stageRow'][data-state='pending'] [data-wui='stageLabel'],
 [data-wui='stageRow'][data-state='pending'] [data-wui='stageStatus'] {
-  color: var(--dsw-alias-label-dimmed);
+  color: var(--dsw-alias-label-secondary);
 }
 
 [data-wui='stageRow'][data-state='current'] [data-wui='stageLabel'] {
@@ -661,7 +694,8 @@ const SHELL = `
 }
 
 [data-wui='stageRow'][data-state='current'] [data-wui='stageStatus'] {
-  color: var(--dsw-alias-state-success-primary);
+  /* A readable green, not the fill green: see the token block. */
+  color: var(--dsh-web-ui-stage-live-text);
   font-weight: 600;
 }
 

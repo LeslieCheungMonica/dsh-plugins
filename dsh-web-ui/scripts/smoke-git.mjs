@@ -722,6 +722,8 @@ const SLOT_SCOPES = {
 
 /** Every registration the applied plugin made. */
 const registrations = []
+/** Every service the applied plugin published, by name (before apply, which publishes). */
+const provided = {}
 /** Store handle -> the scope it first mounted under (the core's `handleScopes`). */
 const handleScopes = new Map()
 /**
@@ -767,13 +769,35 @@ plugin.apply({
   // It also proves the arm is genuinely optional — a REQUIRED dependency here
   // would leave this column, and the git drawer under test, unmounted.
   inject: () => () => {},
+  // `ctx.get` reads a service a fiber did NOT declare, which is how this plugin
+  // consults an optional peer (`ctx.get('webSidebar')` for a file link). This
+  // composition has none of them, which is exactly the deployment the assertions
+  // below describe.
+  get: () => undefined,
+  // `ctx.reflect.provide` is how a client plugin PUBLISHES a service. The browser
+  // half publishes the in-GUI file viewer this way (the conversation asks for it
+  // before handing a file link to the editor), so the stub records it and the
+  // assertion below checks the contract it must satisfy.
+  reflect: {
+    provide(name, value) {
+      provided[name] = value
+      return () => Promise.resolve()
+    },
+  },
   logger: () => ({ info() {}, warn() {}, error() {} }),
   locale: { register: () => () => {} },
   slots: {
     inject: (name, factory) => { registrations.push({ name, dispose: factory() }) },
     register: recordRegistration,
   },
-  workspaces: new Proxy({}, { get: () => () => {} }),
+  // Anything this plugin calls on the workspace service answers as a no-op, EXCEPT
+  // the list the file viewer reads to decide whether a path belongs to a project
+  // at all — that one has to answer like the real store or the decision under test
+  // is never reached.
+  workspaces: new Proxy(
+    { list: { getSnapshot: () => ({ items: [{ path: '/proj' }] }) } },
+    { get: (target, key) => (key in target ? target[key] : () => {}) },
+  ),
   sessions: { open() {}, binding: () => undefined },
   layout: { toggleSidebar() {} },
 })
@@ -960,6 +984,12 @@ check('the bar offers the Git control', barButton('Git') !== undefined,
   barButtons().map(button => button.textContent).join(' | '))
 check('the bar carries exactly one control',
   barButtons().length === 1, barButtons().map(button => button.textContent).join(' | '))
+check('the plugin publishes the in-GUI file viewer the transcript asks for',
+  typeof provided['fileViewer']?.open === 'function', Object.keys(provided).join(' | '))
+check('an absolute path is declined when there is no sidebar to show it in',
+  provided['fileViewer'].open('/proj/src/a.ts') === false)
+check('a relative path is refused outright — the caller resolves, not the viewer',
+  provided['fileViewer'].open('src/a.ts') === false)
 check('the row hosts the shared action seat, once per render',
   actionSeatCalls.length > 0 && actionSeatCalls.every(key => key === 'shell.action'),
   actionSeatCalls.join(' | '))
@@ -989,6 +1019,10 @@ await waitFor(() => [...qa('[data-wui="gitRowName"]')].some(element => element.t
 check('the branches tab lists the local branch', [...qa('[data-wui="gitRowName"]')].some(element => element.textContent === 'main'))
 
 await click(tab('Changes'))
+// The commit box renders only once the tab's own status read has answered, so
+// this waits like every other read-backed assertion here does — reading it
+// straight after the click is a race that loses on a loaded machine.
+await waitFor(() => q('[data-wui="gitCommitInput"]') !== null, 'the changes read')
 check('the changes tab has a commit box', q('[data-wui="gitCommitInput"]') !== null)
 await waitFor(() => section('Changes (1)') !== undefined, 'the change buckets')
 check('the changes tab buckets the dirty tree',
