@@ -17,6 +17,11 @@ export const zh = {
   'chip.loggingOut': '正在退出…',
   'chip.failed': '退出失败，请重试',
   'chip.expiresAt': '有效期至 {time}',
+  // The sidebar account row, while the first probe has not answered yet. It is a
+  // placeholder rather than an identity: the row is the account drawer's only
+  // trigger, so it has to exist before the probe returns, and it must not claim
+  // a name it has not confirmed.
+  'chip.resolving': '账号…',
 }
 
 /** English dictionary (same keys; the key union is taken from {@link zh}). */
@@ -30,6 +35,7 @@ export const en: Record<FeishuLoginKey, string> = {
   'chip.loggingOut': 'Signing out…',
   'chip.failed': 'Sign-out failed, please retry',
   'chip.expiresAt': 'Valid until {time}',
+  'chip.resolving': 'Account…',
 }
 
 /** Every key this plugin's namespace carries. */

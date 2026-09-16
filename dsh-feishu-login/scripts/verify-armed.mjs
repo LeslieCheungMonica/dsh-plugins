@@ -120,9 +120,17 @@ if (WITH_BROWSER) {
     const problems = []
     page.on('pageerror', error => { problems.push(`pageerror: ${error.message}`) })
     await page.goto(`${URL_BASE}/`, { waitUntil: 'load' })
-    const chip = await page.waitForSelector('[data-dshfl^="chip"]', { timeout: 20_000 }).catch(() => null)
-    check('signed in: the browser half renders the identity chip', chip !== null)
-    check('the chip shows the signed-in name', ((await chip?.textContent()) ?? '').includes('演练账号'))
+    // The identity's home is the sidebar column's bottom-left account dock,
+    // declared by dsh-web-ui. On a deployment WITHOUT that plugin this plugin
+    // falls back to its original corner capsule after HEADER_FALLBACK_MS, so
+    // either marker is accepted: what is asserted is that a signed-in tab can see
+    // who it is on a page that actually loaded.
+    const identity = await page
+      .waitForSelector('[data-dshfl="account"], [data-dshfl^="chip"]', { timeout: 20_000 })
+      .catch(() => null)
+    check('signed in: the browser half renders the identity', identity !== null)
+    check('the identity shows the signed-in name',
+      ((await identity?.textContent()) ?? '').includes('演练账号'))
     check('no page errors while signed in', problems.length === 0, problems.slice(0, 2).join(' | '))
 
     // The QR page itself: what Feishu answers for THIS app id + redirect URI.

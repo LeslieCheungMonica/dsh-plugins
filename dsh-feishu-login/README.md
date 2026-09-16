@@ -8,8 +8,12 @@ HTML 发出去**。
 - 二维码用不了时，同一张卡片上有「整页打开飞书登录页」的兜底入口；
 - 登录成功后签发一个签名会话 Cookie，回到你原本要去的地址（`?next=`）；
 - 通过 `allow` 白名单控制谁能进（按 `open_id` / 邮箱 / 邮箱域 / 工号 / 手机号）；
-- 登录后的身份胶囊在**右上角**：会话打开时它长在会话标题栏那一行里，没有会话时落在窗口右上角；
-  同时把原本占这个角落的官方「Session log」下载按钮**顶掉**（`hideSessionLog`，默认开）；
+- 登录后的身份在**左下角**：身份行落在 `dsh-web-ui` 侧边栏底部的「账号停靠位」里，点它向上
+  打开抽屉，抽屉里是**使用情况 / 插件 / 技能 / 产品卡 / 设置 / 退出登录**（使用情况就地展开，
+  插件打开一个与「设置 → 插件」同款列表的弹窗，这两个都由 `dsh-web-ui` 自己画；技能与产品卡
+  目前是空壳入口，点了不做事；设置来自 `ui-settings`，退出登录由本插件提供）；
+  同时把原本占右上角那个位置的官方「Session log」下载按钮**顶掉**（`hideSessionLog`，默认开）。
+  只有在**没有 `dsh-web-ui`**（或它的接管还在重试）的部署里，才退回成原来那个右上角胶囊；
 - **未配置 App ID 时插件完全惰性**：Host 半边不注册任何路由、不注入任何脚本、不拦截任何请求；
   浏览器半边读到「宿主没说它武装了」就**什么都不注册**（不探测、不画 DOM、不发请求）。
 
@@ -213,7 +217,7 @@ node scripts/preview-login.mjs         # 用真实渲染器生成登录页并截
 `verify-armed.mjs` 是「扫码前把两边都验一遍」：它用插件**自己的** `issueSession` 签一个会话
 （所以签名方案与宿主完全一致，且这一步本身自证 —— 宿主接受了就说明格式对），然后验证
 `/` 被 302 拦住、登录页渲染、静态资源照旧、伪造 Cookie 打不开文档、已登录文档带着预启动脚本、
-浏览器半边出现身份胶囊；**并且直接打开飞书那个二维码页，把飞书自己的回答原样读出来** ——
+左下角账号行里出现身份；**并且直接打开飞书那个二维码页，把飞书自己的回答原样读出来** ——
 重定向 URL 没登记（`20029`）、没开网页应用能力这类问题，都在拿起手机之前就暴露了。
 
 它从 profile patch 读 `appId`、从 `~/.dsh/.credentials.yaml` 读密钥，且**从不打印密钥**。
@@ -233,27 +237,42 @@ node scripts/preview-login.mjs         # 用真实渲染器生成登录页并截
 `preview-login.mjs` 还会顺手检查排版（卡片居中、二维码 300×300、品牌 mark 已绘制、兜底按钮在），
 不需要人肉看图。
 
-## 身份胶囊放哪，以及「Session log」按钮怎么没的
+## 身份放哪，以及「Session log」按钮怎么没的
 
-**胶囊有两个家，由框架状态决定，而不是由配置决定**（`src/client/Gate.tsx`）：
+**身份和退出动作分在两个座位上，都由 `dsh-web-ui` 声明，本插件去填**（`src/client/Gate.tsx`）：
 
-| 状态 | 家在 | 用的座位 |
+| 是什么 | 在哪 | 用的座位 |
 |---|---|---|
-| 有会话、标题栏可见 | 会话标题栏那一行（右侧 utility 区） | `conversation.session.header.utilities`，列表座位，`id: feishu-login-account` |
-| 没有会话 / 当前是空白会话（标题栏自己隐藏） | 窗口右上角（`fixed; top:12px; right:14px`） | `shell.overlay`，列表座位 |
+| 身份（头像 + 名字） | 侧边栏左下角的账号行 | `sidebar.account`，单值座位，由 `dsh-web-ui` 的 `sidebar` 注册声明 |
+| 退出登录 | 账号行上方那个抽屉里的一行 | `sidebar.account.menu`，列表座位，`id: feishu-login-sign-out` |
+| 兜底胶囊（只在没有 `dsh-web-ui` 时出现） | 会话标题栏那一行（右侧 utility 区） | `conversation.session.header.utilities`，列表座位，`id: feishu-login-account` |
 
-判定用的是**官方同一个口径**：标题栏在 `blank && composerPhase === 'blank'` 时隐藏，而
-`shell.overlay` 的作用域里拿不到 `composerPhase`，所以退回用 `useSessions` 的
-`current === undefined || byId[current]?.blank === true`（ui-layout 判断详情栏有没有会话，用的
-也是这个 `blank`）。两者只在「空白会话 + 非空白输入阶段」这一瞬间不一致，那时两处会画出
-**完全相同的胶囊并叠在同一角落**，看起来仍然是一个胶囊。
+**为什么不在右上角了。** 右上角那个角落是框架自己的控件该在的地方，而账号是**一天碰一次**的
+东西；它现在和「设置」一起待在左列底部，点一下向上开抽屉，抽屉里六行依次是使用情况、插件、
+技能、产品卡、设置、退出登录（其中技能与产品卡是空壳入口，点了不做事）。抽屉本身、账号行、
+箭头、前四行都是 `dsh-web-ui` 的，本插件只负责往里画「我是谁」和
+「怎么退出」——这也是为什么两个插件谁都不 import 谁：客户端 bundle 之间有纯度限制（见本文件
+「依赖」一节），而**槽位 key 本身就是契约**。
+
+**座位 shape 为什么两边各声明一次。** 这个组合里的插件**不发类型声明**（本包的 `tsdown` 只出
+`lib/*.js`），所以填座位的一侧必须自己把吃到的 owner share 重新声明一遍，接口合并后两边
+是同一个类型。多出来的那十行就是这个跨包契约的代价。
+
+**兜底是有界的，不是第二个家。** 没装 `dsh-web-ui` 的部署永远不会有这两个座位，
+`slots.inject` 会一直不触发，于是**整页都没有退出口**——那比「右上角有个胶囊」更糟。所以本插件
+起了一个 `HEADER_FALLBACK_MS`（2s）的定时器：座位一直没出现就把原来的右上角胶囊注册回去；
+座位一出现就把它撤掉，并且**再也不回来**（`dsh-web-ui` 是在自己的 `apply` 里同步声明这两个座位
+的，所以这个兜底只有在那个插件真的不在、或者它自己的 ~5s 接管重试还没成功时才会活下来）。
+
+**退出登录那一行故意不先关抽屉。** 点下去之后：成功会跳走，失败则把「退出失败，请重试」写在
+这一行上——那一行只有抽屉还开着才看得见。
 
 **「Session log」按钮是被「顶掉」的，不是被 CSS 藏起来的。** 那个按钮由
 `@deepseek-ai/dsh-session-log-export` 注册在 `conversation.session.header.utilities` 上，
 id 是 `session-log-download`。列表座位**一个 id 一个格子、优先级最低者胜**，所以本插件用同一个
 id 在 `priority: -1` 注册一个渲染 `null` 的条目，就把它从 DOM、Tab 顺序和无障碍树里一起拿掉了
 —— 而那个包自己的下载对话框与 `/export` 命令**原封不动**，只是没有按钮触发它。
-`hideSessionLog: false` 可以把按钮放回来（那时胶囊排在它右边）。
+`hideSessionLog: false` 可以把按钮放回来（那时兜底胶囊排在它右边）。
 
 > 为什么不直接 disable `session-log-export` 那一行？那会连带拿掉 `/export` 命令和
 > `sessionLogDownload` 服务；而这里要的只是「这个角落归胶囊」。
@@ -302,7 +321,7 @@ id 在 `priority: -1` 注册一个渲染 `null` 的条目，就把它从 DOM、T
 | 登录页配色 | `src/host/pages.ts` 的 `STYLE`（跟随 `prefers-color-scheme`） |
 | 路由前缀 / 登录页路径 | 配置 `routePrefix`、`loginPath` |
 | 会话时长 / Cookie 名 | 配置 `sessionTtlHours`、`cookieName`、`hintCookieName`、`cookieSecure` |
-| 身份胶囊的位置与外观 | `src/client/styles.ts` 的 `chip`（窗口右上角）/ `chipHeader`（标题栏内）两个变体；关闭用 `accountChip: false` |
+| 身份的外观（头像 / 名字 / 退出行的文案） | `src/client/styles.ts` 的 `account` 变体与 `src/client/locales.ts`（身份行与抽屉的几何属于 `dsh-web-ui`，见上一节）；关闭整块账号 UI 用 `accountChip: false` |
 | 「Session log」按钮的去留 | 配置 `hideSessionLog`（默认 `true` = 顶掉；见上一节） |
 | 遮罩层文案 | `src/client/locales.ts`（命名空间 `feishulogin`） |
 | 白名单语义 | `src/host/config.ts` 的 `isAllowed` |

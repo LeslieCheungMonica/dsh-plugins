@@ -12,6 +12,13 @@
  * and a missing global never blocks anything.
  */
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+// Type-only: pulls ui-layout's SlotMap merge, which declares `shell.overlay`
+// and the frame the sidebar column lives in.
+import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
+// Type-only: pulls ui-conversation's SlotMap merge, which declares the session
+// header's utilities row — the FALLBACK home this plugin's chip still needs on
+// a deployment whose sidebar does not offer the account seats.
+import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { FeishuLoginKey } from './locales.ts'
 
 /** Dictionary namespace owned by this plugin. */
@@ -22,6 +29,50 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
     /** This plugin's browser copy. */
     feishulogin: FeishuLoginKey
   }
+}
+
+/**
+ * The two account seats this plugin's chip renders into, declared by
+ * `dsh-web-ui`'s own `sidebar` registration.
+ *
+ * They are declared HERE as well, with the same shape, for the reason a slot key
+ * is a contract and not a symbol: the declaring plugin ships no type
+ * declarations (`tsdown.config.ts` emits none — this composition's plugins share
+ * types through the framework packages, never through each other), so the
+ * registering side restates the share it consumes. Interface merging makes the
+ * two declarations one, and identical members are the price of a cross-plugin
+ * contract that no package.json can express.
+ *
+ * A deployment without `dsh-web-ui` never declares these keys, so the
+ * registrations below simply never land — which is why the plugin keeps its
+ * header chip as a bounded fallback (see index.tsx).
+ */
+declare module '@deepseek-ai/dsh-client-ui-slots' {
+  interface SlotMap {
+    /** The signed-in identity, inside the sidebar column's bottom-left row. */
+    'sidebar.account': { kind: 'single'; scope: 'root'; owner: SidebarAccountOwnerProps }
+    /** Rows at the bottom of the column's account drawer. */
+    'sidebar.account.menu': { kind: 'list'; scope: 'root'; owner: SidebarAccountMenuOwnerProps }
+  }
+}
+
+/**
+ * Owner share of the account identity seat, as `dsh-web-ui` passes it. This
+ * occupant reads the single member: the rail is 56px wide, so a name there would
+ * be a clipped stub and the avatar renders alone.
+ */
+export interface SidebarAccountOwnerProps {
+  /** Whether the column renders wide content (false = 56px rail, avatar only). */
+  wide: boolean
+}
+
+/**
+ * Owner share of one account-drawer row, as `dsh-web-ui` passes it: nothing.
+ * @see SidebarAccountMenuOwnerProps in dsh-web-ui's contract for why.
+ */
+export interface SidebarAccountMenuOwnerProps {
+  /** Marker field: the row owns its own content and behaviour. */
+  children?: never
 }
 
 /** The global the host's index tap writes before the app boots. */
@@ -145,11 +196,32 @@ export interface GateFace {
 export type GateProps = PropsRuntime<'shell.overlay'> & PropsLocale<typeof NS> & GateFace
 
 /**
- * Composed props of the session-header entry. The seat's own owner share is
- * empty (the header hands an action nothing but the session scope), so this is
- * the standard runtime kit, the typed `t` seat, and this plugin's face.
+ * Composed props of the session-header entry — the FALLBACK home of the chip,
+ * used only while the sidebar column has not offered the account seats. The
+ * seat's own owner share is empty (the header hands an action nothing but the
+ * session scope), so this is the standard runtime kit, the typed `t` seat, and
+ * this plugin's face.
  */
 export type HeaderChipProps =
   & PropsRuntime<'conversation.session.header.utilities'>
+  & PropsLocale<typeof NS>
+  & GateFace
+
+/**
+ * Composed props of the sidebar account identity occupant: the column's owner
+ * share (its width state), the runtime kit, and this plugin's face.
+ */
+export type AccountTriggerProps =
+  & PropsRuntime<'sidebar.account'>
+  & PropsLocale<typeof NS>
+  & GateFace
+
+/**
+ * Composed props of the sign-out row inside the sidebar's account drawer. The
+ * seat's owner share carries nothing, so this is the runtime kit, `t`, and the
+ * face.
+ */
+export type AccountMenuProps =
+  & PropsRuntime<'sidebar.account.menu'>
   & PropsLocale<typeof NS>
   & GateFace

@@ -1,10 +1,15 @@
 /**
  * The browser half's stylesheet.
  *
- * Both surfaces live in the frame's `shell.overlay` layer, which is
+ * The gate lives in the frame's `shell.overlay` layer, which is
  * `pointer-events: none` with `pointer-events: auto` on its direct children —
- * so the gate is one fixed, opaque child that swallows every click, and the
- * chip is a second, small one that opts back in on its own box only.
+ * so the gate is one fixed, opaque child that swallows every click.
+ *
+ * The account controls are NOT overlay children: they render into the sidebar
+ * column's own seats (`sidebar.account` / `sidebar.account.menu`, declared by
+ * `dsh-web-ui`), so this sheet styles their content and leaves their geometry to
+ * the column that owns it. The one exception is the header capsule below, which
+ * exists only as a fallback for a deployment with no such column.
  *
  * Colours ride the shell's semantic tokens (`--dsw-alias-*`) with hard-coded
  * fallbacks: this plugin may render on a composition whose theme plugin is not
@@ -75,37 +80,79 @@ export const STYLES = `
 }
 
 /*
- * The chip has two homes. In the session header it sits in the flow (the
- * chipHeader variant below), which is where it belongs whenever a session is
- * open. With no session there is no header to sit in, so this variant parks it
- * in the frame's top-right corner instead — the same corner the account chip
- * took over from the shipped Session-log button.
+ * The account controls have two homes, and only one of them is a corner.
+ *
+ * The PRIMARY home is the sidebar column's bottom-left account dock: the
+ * identity is [data-dshfl='account'] (the content of a row dsh-web-ui owns —
+ * this sheet deliberately styles the CONTENT only, never the row's geometry) and
+ * the sign-out action is a [data-wui='drawerRow'] inside that dock's drawer, so
+ * it wears the column's own row styling and only its disabled colour lives here.
+ *
+ * The FALLBACK home is the session header's utilities row
+ * ([data-dshfl='chipHeader']), registered only while the account seats have not
+ * appeared — a deployment that installs this plugin without dsh-web-ui.
+ *
+ * The old fixed, top-right corner capsule ([data-dshfl='chip']) is GONE with
+ * its component: the account is not in that corner any more, and a stylesheet
+ * rule for a surface nothing renders is a lie about what this plugin draws.
  */
-[data-dshfl='chip'] {
-  position: fixed;
-  right: 14px;
-  top: 12px;
-  z-index: 80;
-  pointer-events: auto;
+[data-dshfl='account'] {
   display: flex;
   align-items: center;
   gap: 8px;
-  max-width: 300px;
-  padding: 5px 10px 5px 6px;
-  border-radius: 999px;
-  border: 1px solid var(--dsw-alias-border-l2, rgba(128, 140, 160, .28));
-  background: var(--dsw-alias-bg-elevated, rgba(24, 27, 33, .92));
-  color: var(--dsw-alias-label-secondary, #98a0ad);
+  min-width: 0;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
     "Hiragino Sans GB", "Microsoft YaHei", Roboto, Helvetica, Arial, sans-serif;
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.4;
-  opacity: .55;
-  transition: opacity .15s ease;
-  backdrop-filter: blur(6px);
 }
-[data-dshfl='chip']:hover { opacity: 1; }
-/* The in-header variant: same capsule, in the header row's own flow. */
+[data-dshfl='account'] .dshfl-name {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+[data-dshfl='account'] .dshfl-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  object-fit: cover;
+  background: var(--dsw-alias-bg-base, #0e1013);
+}
+[data-dshfl='account'] .dshfl-initial {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--dsw-alias-brand-primary, #6f9dff);
+  color: #0b1220;
+  font-size: 12px;
+  font-weight: 650;
+}
+/* Before the first probe answers. It must not read as a real identity: it is a
+   word, not a name, and a visitor who is not signed in gets bounced by the gate
+   rather than seeing a placeholder that looks like somebody. */
+[data-dshfl='accountPending'] {
+  color: var(--dsw-alias-label-tertiary, #7d8695);
+  font-size: 13px;
+}
+
+/* The sign-out row, inside the column's drawer. Geometry, hover and icon slot
+   are dsh-web-ui's [data-wui='drawerRow'] rules; this adds the one state that
+   only this row has. */
+[data-dshfl='signOut'][disabled] {
+  cursor: default;
+  opacity: .6;
+}
+[data-dshfl='signOut'][disabled]:hover {
+  background: transparent;
+}
+
+/* The fallback capsule: the session header's utilities row. */
 [data-dshfl='chipHeader'] {
   display: flex;
   align-items: center;
@@ -162,44 +209,4 @@ export const STYLES = `
   font-size: 11px;
   font-weight: 650;
 }
-
-[data-dshfl='chip'] .dshfl-avatar {
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  flex: 0 0 auto;
-  object-fit: cover;
-  background: var(--dsw-alias-bg-base, #0e1013);
-}
-[data-dshfl='chip'] .dshfl-initial {
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--dsw-alias-brand-primary, #6f9dff);
-  color: #0b1220;
-  font-size: 11px;
-  font-weight: 650;
-}
-[data-dshfl='chip'] .dshfl-name {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-[data-dshfl='chip'] button {
-  flex: 0 0 auto;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  cursor: pointer;
-  padding: 0 2px;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
-[data-dshfl='chip'] button:hover { color: var(--dsw-alias-brand-primary, #6f9dff); }
-[data-dshfl='chip'] button[disabled] { cursor: default; opacity: .6; text-decoration: none; }
 `

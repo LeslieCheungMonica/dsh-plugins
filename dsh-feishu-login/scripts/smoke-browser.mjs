@@ -4,8 +4,9 @@
  * It asserts what only a browser can show: that the plugin's browser half
  * materializes in this composition, that it is invisible while the host has no
  * credentials (the plugin must not draw on a working page), that the identity
- * chip renders when the host reports a session, and that the tab is pushed to
- * the login page when the host reports none.
+ * renders in the sidebar's bottom-left account dock when the host reports a
+ * session, and that the tab is pushed to the login page when the host reports
+ * none.
  *
  * The session endpoint is answered at the wire, so the armed states are
  * exercised without arming the host — which matters, because arming it in this
@@ -96,7 +97,10 @@ async function armPage(page) {
 
   const state = await page.evaluate(() => ({
     gate: document.querySelector('[data-dshfl="gate"]') !== null,
-    chip: document.querySelector('[data-dshfl^="chip"]') !== null,
+    // The identity's PRIMARY home is the sidebar's account dock (declared by
+    // dsh-web-ui); the corner capsule is the fallback for a deployment without
+    // it. Either counts as "the plugin drew the account".
+    chip: document.querySelector('[data-dshfl="account"], [data-dshfl^="chip"]') !== null,
     style: document.querySelector('style[data-plugin="dsh-feishu-login"]') !== null,
     overlaySeat: document.querySelector('[data-shell-overlay]') !== null,
   }))
@@ -104,9 +108,9 @@ async function armPage(page) {
   check('the plugin stylesheet is installed', state.style)
   check('no gate overlay on a normal load', !state.gate)
   if (ARMED) {
-    check('armed host: the identity chip renders for a signed-in tab', state.chip)
+    check('armed host: the identity renders for a signed-in tab', state.chip)
   } else {
-    check('unarmed host: no identity chip', !state.chip)
+    check('unarmed host: no identity', !state.chip)
   }
   check('no page errors', problems.length === 0, problems.slice(0, 2).join(' | '))
 
@@ -120,7 +124,7 @@ async function armPage(page) {
   await page.close()
 }
 
-// ── 2. host reports a session: the identity chip renders ───────────────────
+// ── 2. host reports a session: the identity renders in the sidebar's dock ───
 {
   const { page, problems } = await newPage()
   await armPage(page)
@@ -140,35 +144,77 @@ async function armPage(page) {
     }),
   }))
   await page.goto(URL, { waitUntil: 'load' })
-  const chip = await page.waitForSelector('[data-dshfl^="chip"]', { timeout: 20_000 }).catch(() => null)
-  check('signed in: the identity chip renders', chip !== null)
-  const text = chip === null ? '' : (await chip.textContent()) ?? ''
-  check('the chip carries the signed-in name', text.includes('李彦辉'), `text="${text.trim()}"`)
-  check('the chip carries a sign-out action', (await page.$('[data-dshfl^="chip"] button')) !== null)
+  const identity = await page
+    .waitForSelector('[data-dshfl="account"], [data-dshfl^="chip"]', { timeout: 20_000 })
+    .catch(() => null)
+  check('signed in: the identity renders', identity !== null)
+  const text = identity === null ? '' : (await identity.textContent()) ?? ''
+  check('the identity carries the signed-in name', text.includes('李彦辉'), `text="${text.trim()}"`)
   check('no gate overlay while signed in', (await page.$('[data-dshfl="gate"]')) === null)
   check('no page errors (signed in)', problems.length === 0, problems.slice(0, 2).join(' | '))
-  // The chip belongs in the session header, and the shipped Session-log button
-  // must be displaced by it (this deployment's explicit choice): the header's
-  // utilities seat holds one cell per id, so the plugin claims that id.
+
+  // Where it sits, and that the sign-out action is one click away from it. On
+  // this composition (dsh-web-ui installed) the identity is the sidebar's
+  // bottom-left row and sign-out is a row inside the drawer it opens; on a
+  // deployment without that plugin it is the original top-right capsule with its
+  // own button. Both are checked as the SAME claim: the corner the reader lands
+  // on can reach the session verb.
+  const dock = await page.$('[data-wui="accountRow"]')
+  if (dock !== null) {
+    const box = await dock.boundingBox()
+    const column = await (await page.$('[data-wui="column"]'))?.boundingBox()
+    check('the account row is at the column\'s bottom-left',
+      box !== null && column !== null && box.x < column.x + column.width / 2 && box.y > column.y + column.height / 2,
+      JSON.stringify({ box, column }))
+    await dock.click()
+    const drawer = await page.waitForSelector('[data-wui="accountDrawer"]', { timeout: 5000 }).catch(() => null)
+    check('clicking it opens the drawer', drawer !== null)
+    const drawerBox = await drawer?.boundingBox()
+    check('the drawer opens UPWARD from the row',
+      drawerBox !== null && box !== null && drawerBox !== undefined && drawerBox.y + drawerBox.height <= box.y + 1,
+      JSON.stringify({ drawerBox, box }))
+    check('the drawer\'s first row is the usage block',
+      ((await page.textContent('[data-wui="drawerRow"]')) ?? '').includes('使用情况') ||
+      ((await page.textContent('[data-wui="drawerRow"]')) ?? '').includes('Usage'),
+      String(await page.textContent('[data-wui="drawerRow"]')))
+    check('the drawer holds the shipped settings trigger',
+      (await page.$('[data-wui="accountDrawer"] button[aria-haspopup="dialog"]')) !== null)
+    check('the drawer holds the plugin\'s sign-out row', (await page.$('[data-dshfl="signOut"]')) !== null)
+    // Nothing in the frame's top-right corner is this plugin's any more.
+    const topRightChip = await page.evaluate(() => {
+      const el = document.querySelector('[data-dshfl^="chip"]')
+      if (el === null) return null
+      const r = el.getBoundingClientRect()
+      return { y: Math.round(r.y), right: Math.round(window.innerWidth - r.right) }
+    })
+    check('no account capsule in the top-right corner', topRightChip === null, JSON.stringify(topRightChip))
+  } else {
+    // Fallback deployment: the original capsule, in its original corner, with
+    // its own sign-out button.
+    const chip = await page.$('[data-dshfl^="chip"]')
+    const box = await chip?.boundingBox()
+    check('the fallback capsule sits in the top-right', box !== null && box !== undefined && box.y < 60, JSON.stringify(box))
+    check('the fallback capsule carries a sign-out action', (await page.$('[data-dshfl^="chip"] button')) !== null)
+  }
+
+  // The shipped Session-log button must be displaced on EITHER path (this
+  // deployment's explicit choice): the header's utilities seat holds one cell per
+  // id, so the plugin claims that id at priority -1.
   await page.waitForSelector('[data-wui="sessionOpen"]', { timeout: 15_000 }).catch(() => {})
   const sessionRows = await page.$$('[data-wui="sessionOpen"]')
   check('the sidebar lists a session to open', sessionRows.length > 0, String(sessionRows.length))
   // Try rows until one shows the header chrome: a blank Session hides it (its
-  // window is the Hero screen), and only a visible header can host the chip.
+  // window is the Hero screen), and only a visible header can host the button
+  // whose absence is under test.
   let header = null
   for (const row of sessionRows) {
     await row.click({ force: true }).catch(() => {})
     await page.waitForTimeout(3000)
     header = await page.evaluate(() => {
-      const chip = document.querySelector('[data-dshfl^="chip"]')
       const headerEl = document.querySelector('header[class*="header"]')
       const logButton = [...document.querySelectorAll('button')]
         .find(node => (node.textContent ?? '').trim().startsWith('Session log'))
-      const r = chip?.getBoundingClientRect()
       return {
-        chipKind: chip?.getAttribute('data-dshfl') ?? null,
-        chipTop: r ? Math.round(r.y) : null,
-        chipRight: r ? Math.round(window.innerWidth - r.right) : null,
         headerVisible: headerEl === null ? false : !/headerHidden/u.test(headerEl.className),
         logButton: logButton === undefined || logButton === null,
       }
@@ -176,10 +222,6 @@ async function armPage(page) {
     if (header.headerVisible) break
   }
   if (header !== null) {
-    check('the chip sits in the top-right, not the bottom-right', header.chipTop !== null && header.chipTop < 60, JSON.stringify(header))
-    if (header.headerVisible) {
-      check('with a session open the chip lives in the session header', header.chipKind === 'chipHeader', String(header.chipKind))
-    }
     check('the shipped Session-log header button is displaced', header.logButton)
   }
   await page.close()
@@ -224,7 +266,19 @@ async function armPage(page) {
     }
     return null
   }
-  const trigger = await page.$('[data-slot="sidebar.settings"] button')
+  // The shipped Settings trigger now renders INSIDE the account drawer rather
+  // than in the column's foot, so reaching it is itself part of the walk: open
+  // the account row, then the trigger the drawer holds.
+  const accountRow = await page.$('[data-wui="accountRow"]')
+  if (accountRow !== null) {
+    await accountRow.click()
+    await page.waitForTimeout(600)
+  }
+  // `> button` on purpose: SettingsRoot renders the trigger AND the settings
+  // panel as siblings inside one slot wrapper, so a descendant selector would
+  // also match the panel's own buttons the moment it is open.
+  const trigger = await page.$('[data-wui="accountDrawer"] [data-slot="sidebar.settings"] > button')
+    ?? await page.$('[data-slot="sidebar.settings"] > button')
   check('settings trigger reachable', trigger !== null)
   if (trigger !== null) {
     await trigger.click()
