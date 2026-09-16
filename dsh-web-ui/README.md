@@ -35,7 +35,9 @@ the shell:
 - the **bottom-left corner is the account dock**: the signed-in identity sits
   above the column's foot, and clicking it opens an upward drawer holding
   **使用情况** (the current session's token usage), **插件** (a modal listing what
-  was loaded, presented like Settings → Plugins), **设置**, and **退出登录** (see
+  was loaded, presented like Settings → Plugins), **技能** (a modal with the
+  installed skills, split by public/personal, and the marketplace below them),
+  **设置**, and **退出登录** (see
   [The account dock](#the-account-dock)). The shipped account capsule used to be a
   top-right corner chip; it is not any more;
 - the shipped **settings panel and brand** keep rendering — inside this plugin's
@@ -710,7 +712,7 @@ The column's bottom-left corner holds the signed-in identity
 ┌──────────────────────────────┐
 │  📊  使用情况            ⌃   │   ← expands in place (see below)
 │  🧩  插件                    │   ← opens a modal (see below)
-│  ✨  技能                    │   ← PLACEHOLDER: nothing happens yet
+│  ✨  技能                    │   ← opens a modal (see below)
 │  ▭   产品卡                  │   ← PLACEHOLDER: nothing happens yet
 │  ⚙   设置                    │   ← the SHIPPED settings trigger, and its modal
 │  ⏻   退出登录                │   ← registered by dsh-feishu-login
@@ -727,27 +729,30 @@ Four things about it are deliberate:
   gone from the other plugin entirely, not hidden with CSS.
 - **The drawer carries four ROWS with four different owners, and no two plugins
   learn about each other.** *使用情况* is this plugin's, expanded in place.
-  *插件* is this plugin's too, and opens a modal. *设置* is `ui-settings`' shipped
-  trigger, rendered **inside the drawer instead of the column's foot** — it owns
-  its own modal state, so a row that *is* that trigger opens the settings panel by
-  existing, and this plugin never needs to know how the panel works. *退出登录*
-  arrives through a seat this plugin declares and the plugin that holds the
-  session verb fills (see the seats below). Every modal here leaves the drawer
-  open behind it, so dismissing one returns the reader to where they were.
-- **Two of the six rows are deliberately inert.** *技能* and *产品卡* are entry
-  points whose surfaces are not built: the rows are on the page so the drawer's
-  final shape can be seen and reviewed, and the click does nothing
-  (`PLACEHOLDER_CLICK` in AccountDock.tsx — a named constant, so the intent is
-  greppable and disappears with the surfaces it stands for). Each carries a
-  tooltip saying so, because a control that silently does nothing reads as a bug;
-  that tooltip, the `data-placeholder` mark, and the constant are the three things
-  to delete when the surfaces land. The harness pins the inertness on purpose, so
-  wiring one up is a deliberate edit rather than an inherited no-op.
-- **One Escape dismisses one surface.** Two modals can sit above this drawer —
-  this plugin's own, and the settings panel — and both listen for Escape on the
-  document. The drawer's listener is the earlier one, so it checks for a live
-  `[role="dialog"]` and stands down: closing the modal must not also close the
-  drawer the reader opened it from.
+  *插件* and *技能* are this plugin's too, and each opens a modal. *设置* is
+  `ui-settings`' shipped trigger, rendered **inside the drawer instead of the
+  column's foot** — it owns its own modal state, so a row that *is* that trigger
+  opens the settings panel by existing, and this plugin never needs to know how
+  the panel works. *退出登录* arrives through a seat this plugin declares and the
+  plugin that holds the session verb fills (see the seats below). Every modal here
+  leaves the drawer open behind it, so dismissing one returns the reader to where
+  they were.
+- **ONE of the six rows is deliberately inert.** *产品卡* is an entry point whose
+  surface is not built: the row is on the page so the drawer's final shape can be
+  seen and reviewed, and the click does nothing (`PLACEHOLDER_CLICK` in
+  AccountDock.tsx — a named constant, so the intent is greppable and disappears
+  with the surface it stands for). It carries a tooltip saying so, because a
+  control that silently does nothing reads as a bug; that tooltip, the
+  `data-placeholder` mark, and the constant are the three things to delete when the
+  surface lands. The harness pins the inertness on purpose, so wiring it up is a
+  deliberate edit rather than an inherited no-op. *技能* was the other one and has
+  graduated: its row, icon and label are unchanged, and only the gesture became
+  real.
+- **One Escape dismisses one surface.** Three modals can sit above this drawer —
+  this plugin's Plugins and Skills modals, and the settings panel — and all of them
+  listen for Escape on the document. The drawer's listener is the earlier one, so
+  it checks for a live `[role="dialog"]` and stands down: closing the modal must
+  not also close the drawer the reader opened it from.
 - **In the rail it expands instead of opening.** The column is 56px wide and
   clips its own overflow, so a drawer there could not be read: the rail row is the
   avatar alone, and activating it expands the column *and* opens the drawer — the
@@ -936,6 +941,260 @@ The catalogue reads the host on **mount**, and the modal only mounts it while it
 is open — so opening the modal is the refresh, and a phase read after a plugin was
 reloaded is never stale. The card grid scrolls inside a 444px window (this
 deployment's tree is ~180 entries) so the modal never outgrows the viewport.
+
+### 技能 — installed skills and the marketplace, in a modal
+
+The Skills row (`src/client/SkillsDialog.tsx`) opens a modal with two sections,
+because it answers two different questions:
+
+```
+┌──────────────────────────────────────────┐
+│  已安装的技能  3                          │   ← what this deployment HAS (a prop)
+│  ┌ 公共 ┐ 个人                            │   ← its two scopes, as TABS
+│  │ 技能名                                │
+│  │ 一句话描述                            │
+├──────────────────────────────────────────┤
+│  技能市场  7                              │   ← what it COULD install (a READ)
+│  以 li.yh9@… 的身份读取                   │   ← whose list this is
+│  │ 技能名                        [个人]   │   ← SkillHub's displayName + summary
+└──────────────────────────────────────────┘
+```
+
+- **The scopes are tabs; the marketplace is not a third one.** 公共 / 个人 are a
+  subdivision of ONE set, so the heading names the set, the tab names the subset,
+  and the count on the heading stays the whole installed set so it does not move
+  when a tab is clicked. The marketplace is not a scope of that set at all — its
+  data comes from somewhere else entirely — so a third tab would claim a symmetry
+  that does not hold. It is a section below the divider.
+- **The marketplace's count is SkillHub's `total`, not the number of cards.**
+  `limit` is not sent, so the server applies its own default of 20; a heading that
+  reported the returned slice as the total would understate the catalogue with no
+  sign that it had.
+- **A card's body is the best description available, and never a copy of its own
+  title.** SkillHub has exactly one description field — `summary` (`/resolve` returns
+  version, fingerprint and a download URL; the ClawHub-compatible search returns the
+  same `summary`) — and for some assets it is a copy of the display name. Both of the
+  assets this deployment's `label=FDE` catalogue holds today are like that
+  (`命名空间测试`, `权限测试`), so their cards rendered the title twice, which reads as
+  a card with no description. The body is therefore chosen in this order: the
+  **installed package's own `description`** when this host has the skill (the scan
+  read it from `SKILL.md`, which MUST carry one for the loader to accept the skill at
+  all — so this is the authoritative sentence, and it is what the 个人 tab shows); then
+  `summary`, when it says something the title does not; then nothing. A card with no
+  body carries its **identity line** instead — `ywaqtest/jcbfai7e · v2.0.3` — which is
+  worth having either way, since the marketplace's display name is not the name the
+  skill installs under and the version is what an upgrade would compare.
+- **A card is one shape, whatever is in it.** Every card in a row shares the row's
+  height, its action row sits at the card's foot, its name is a single ellipsised
+  line (the full name is the element's tooltip), and its control — 安装 or 已安装 — is
+  24px tall. Each of those was a measured misalignment, not a preference; see
+  `preview:skills-cards`.
+- **A marketplace card is a button; an installed one is a fact.**
+  `安装` / `安装中…` / `已安装` / `失败+重试` are the four states a marketplace card
+  can be in, and the last one explains itself IN the card it belongs to — the reader
+  pressed a button labelled with that skill's name. Installed cards carry no action:
+  this plugin has no uninstall or upgrade yet, and a button before those routes
+  exist would be a promise the modal cannot keep.
+- **Two sections, two READS, and one of them the marketplace can change.** The
+  marketplace reads SkillHub (through this plugin's host, which holds the token);
+  the installed block reads this host's own skill directories. They are read at one
+  level so the marketplace can ask the installed list what already exists, and an
+  install re-reads it — because the only authority on what is on disk is the scan,
+  not a flag the component set. A failed scan takes its own block down and leaves
+  the marketplace rendering.
+- **Both reads have the same three states** — reading, failed (with a retry), and
+  ready — and the body that owns them mounts per OPEN, so opening the modal is the
+  refresh for both. The read happens when the modal OPENS — the
+  modal only mounts its catalogue while it is open — so opening the modal is the
+  refresh and a skill published a minute ago cannot be missing. A failure is a
+  sentence in place, not a blank section, because every code it can carry is a
+  state a reader is looking at.
+### 搜索技能 — one box, two consumers
+
+A search row sits at the top of the modal, above both sections, because it belongs to
+neither: a reader looking for a skill by name should not have to know which half it is
+in.
+
+**The installed block filters what it already has**, on the keystroke and without a
+request — the scan returns everything there is, so a local filter is complete. It
+matches the two strings the card already shows (name and description), because "what
+does it do" is exactly what a description is for, and it applies to whichever tab is
+showing. The count follows the filter, and a term that matches nothing says
+**没有匹配的技能** — a different sentence from **还没有安装公共技能**, because "your
+machine is empty" and "your typo matched nothing" are different facts and telling a
+reader the wrong one is worse than saying nothing.
+
+**The marketplace re-asks SkillHub**, because it cannot be filtered locally: SkillHub
+answers a page (its own default `limit` of 20), so a local filter would silently miss
+every match past the first page — a reader types a skill's name, sees nothing, and
+concludes the skill does not exist. The term goes to the host route as `?q=`, which
+forwards it to `/skills/search` alongside the two parameters that stay host-side, and
+SkillHub matches it against asset METADATA:
+
+- `packageType=SKILL` and `label=FDE` remain constants of what this deployment
+  catalogues. That is what makes accepting a term compatible with the rule that the
+  caller does not decide what is searched — a term narrows within that frame and
+  cannot name an identity, ask for another asset type, or widen the scope;
+- **it does not look inside packages.** A term that appears only in a skill's
+  `SKILL.md` matches nothing (measured: `q=用例` returns 0 while the package's own
+  description is all about 测试用例). The description the CARD shows for an installed
+  skill comes from the package, but the search does not reach it;
+- the term is capped at 100 characters, on the input and on the route, and an empty
+  one is not sent at all (`q=` would mean the same thing, and saying it explicitly is
+  a request nobody made).
+
+**Typing waits; asking does not.** A read caused by the term changing is debounced by
+400ms — one request per settled query instead of one per keystroke, against SkillHub's
+documented 60 searches a minute. A read caused by anything else (the modal opening, a
+retry after a failure) is issued in the same tick, because it was asked for outright.
+Overlapping answers are ordered by IDENTITY rather than arrival: the read allowed to
+render is the newest one, so a slow answer for `命` cannot land after a fast answer for
+`命名空间` and look like the search undoing itself.
+
+### 安装 — downloading a skill onto this machine
+
+Each marketplace card carries a **安装** button, and it is the only control in this
+plugin that writes to disk. The chain is:
+
+```
+浏览器 POST /dsh-web-ui/skills/install {namespace, slug}
+  host 验证会话（Cookie → /feishu-auth/session）→ 推导 token
+GET {SkillHub}/api/cli/v1/skills/{ns}/{slug}/download   Bearer <token>
+  → 302 Location: {MinIO}/skillhub/packages/…/bundle.zip?X-Amz-Signature…  (600s)
+GET <Location>                                          ← 绝不带 Authorization
+  → ZIP  →  校验 + 解压到 ~/.dsh/skills/<技能名>/
+```
+
+**The token rides one hop and no more.** The download's 302 leaves SkillHub
+entirely — the pre-signed URL is on a different origin (`:7075`, MinIO) — and the
+bearer token is SkillHub's credential, not MinIO's. Following the redirect by hand
+is not politeness: the live service answers **400** when a request carries both a
+pre-signed signature and an `Authorization` header, which is a behaviour this was
+measured against rather than reasoned about. One hop, over `http(s)` only, and the
+second request is built without the header by construction.
+
+**The archive is untrusted input, so its refusal list is explicit**
+(`src/host/zip.ts`, read in process with `node:zlib` — no runtime dependency and no
+`unzip` binary, because a write path is the worst place to add one and because this
+way the harness can BUILD a hostile archive and assert that THIS code refuses it):
+
+- **path escapes** — `..`, an absolute path, a drive letter, a backslash, a control
+  character: refused before anything is written, and `extractZipInto` re-checks
+  containment against the resolved root as an independent second guard;
+- **links and specials** — a symlink entry (or a hardlink, fifo, or device) would
+  point a name inside the target at a path outside it, one indirection later;
+- **bombs and sizes** — entry count, per-entry bytes, total bytes, and compression
+  ratio, plus `zlib`'s own `maxOutputLength` so a header that LIES about its size
+  cannot allocate its way through;
+- **Zip64 and multi-disk** — refused rather than misparsed.
+
+**The name comes from the package, and the loader's rule decides.** The directory
+is `~/.dsh/skills/<name>` where `<name>` is the `name` in the package's own
+`SKILL.md` — NOT the marketplace's display name (the same asset is `命名空间测试` in
+SkillHub and `test-design-case-generator` inside the package). A name the loader
+would reject is refused (`not-a-skill`) rather than installed: the loader ignores
+such a skill entirely, and silently writing files that no session can invoke is the
+worst of the three outcomes.
+
+**Two refusals protect what is already there, and neither writes a byte**: a local
+check of the provenance records (so a second click does not download 32MB to refuse
+it), then the `mkdir` that CLAIMS the directory — non-recursive, so `EEXIST` is the
+answer and two concurrent installs cannot both win. A failure after the claim
+removes the directory it claimed, because a half-unpacked skill is worse than none.
+
+### 已安装的技能 — what is actually on this machine
+
+The installed block reads THIS host's filesystem, not SkillHub
+(`GET /dsh-web-ui/skills/installed?project=<path>`), and it mirrors the loader's own
+enumeration so that **what is listed is what a session can invoke**: one level per
+root, a directory entry meaning `<dir>/SKILL.md`, a flat `.md` file being a skill in
+its own right, `.system` skipped in the user root, symlinks followed (this plugin's
+own checkout installs its skills that way), and a file without a usable `name` and
+`description` left out — the same three ways the loader ignores one. A name found in
+an earlier root shadows the same name later, which is why the roots are walked in
+the loader's rank order and the first sighting wins.
+
+| tab | root | who put it there |
+| --- | --- | --- |
+| **个人** | `~/.dsh/skills` | the marketplace's own install target — so every skill this plugin wrote is here, and nothing else is |
+| **公共** | `~/.agents/skills`, `<project>/.dsh/skills`, `<project>/.agents/skills`, `$DSH_BUNDLED_SKILL_DIR` | the deployment, the shared agents root, or the project |
+
+The split is the only honest reading of the two tab names: 个人 is one directory,
+and it is the one this plugin writes. Cards in 公共 name the root they came from,
+because that is what makes the split legible; cards in 个人 name the marketplace
+version instead, since a root label there would only repeat the tab. The modal also
+prints the directories it scanned (and which of them do not exist), which is the
+answer to "I installed it — where did it go", and the difference between "no skills"
+and "no roots".
+
+A directory the installer created carries `.dsh-web-ui-source.json` with the
+namespace, slug, version and time. The marketplace card's 已安装 state is read from
+that record — matched on namespace+slug, never on a name, because the two names do
+not match — so the state survives a reload and disappears with the directory.
+
+### 技能市场 — SkillHub, and how the token is derived
+
+The marketplace is SkillHub's `/skills/search` (`src/host/skills.ts`,
+`src/shared/skillswire.ts`). Two facts shape the whole implementation.
+
+**The question is fixed.** `packageType=SKILL` and `label=FDE` are constants of
+what this deployment's marketplace MEANS, not arguments: a browser that could
+choose them would turn a single-purpose read into a general-purpose proxy into
+SkillHub. Nothing else is sent — not `limit`, not `assetOwnership`, not `q` — so
+SkillHub's own defaults apply. One consequence is visible on screen: because
+`assetOwnership` is not sent, the answer contains the PUBLIC assets **plus the
+reader's own PRIVATE ones**, so a PRIVATE card carries a 个人 tag and the section
+names the account it was read as. Both exist so a mixed list can be reasoned
+about; sending `assetOwnership=PUBLIC` would make it public-only instead.
+
+**The identity is verified, not accepted.** SkillHub authenticates per reader
+with `Bearer <handle>-skillhub`, where the handle is the local part of the
+Feishu address (`li.yh9@asiainfo-sec.com` → `li.yh9-skillhub`). That address
+exists in exactly one place — the signed session `dsh-feishu-login` issues at the
+end of its QR login — and that plugin offers no host-side service and no shared
+secret. So:
+
+1. The host takes the `Cookie` header the browser sent it and asks the login
+   plugin's own `/<prefix>/session` route **over loopback** (`ctx.webServer.port`
+   is this process, so the session route is one local request away) who that
+   cookie belongs to.
+2. It derives the token from **the address the login plugin named**. The browser
+   sends no identity at all: there is nothing to forge, and a caller can only act
+   as whoever its own cookie proves it is. A client-supplied email would have let
+   any page that reaches this route read somebody else's private assets.
+3. It calls `/auth/whoami` FIRST, to validate the token, and only then searches.
+   "Your account was never provisioned" and "nothing matched" are different
+   answers, and only the first is actionable. A refusal never goes on to search.
+4. The token never leaves the host: the browser receives a list of skills.
+
+`/auth/whoami` runs first for a second reason: its `data.email` names the account
+the list was read as, which is what the modal displays. It is a label, not a
+second source of truth — the session already proved the identity, and a missing
+label does not sink a list.
+
+Every failure is content, like every other Feishu-backed route here: HTTP 200
+with `{ ok: false, error }` and one of `no-session`, `no-email`, `unauthorized`,
+`unreachable`, `http-error`, `unreadable`, `unsafe-archive`, `archive-invalid`,
+`archive-too-large`, `already-installed`, `not-a-skill`, `no-archive`,
+`install-failed`, `bad-request`, or — the one code the BROWSER produces rather than
+the host — `host-unmounted`. Each names a different action,
+which is the only reason to have more than one. `unreachable` is not theoretical:
+`acp.asiainfo-sec.com` does not resolve outside the company network, and the
+sentence carries Node's actual cause (`getaddrinfo ENOTFOUND …`), because
+`fetch failed` alone diagnoses nothing.
+
+`host-unmounted` exists because the first version of this modal did NOT have it,
+and the mistake cost a reader real time. A DSH host whose bundle predates this
+route answers the SPA's `index.html` for a path it does not know — host code is
+imported once per process, so a rebuilt plugin needs `dsh web` restarted while the
+browser half is served fresh on every reload. That failure was reported as
+`unreachable`, whose sentence says "needs the company network / VPN", and the
+reader went to check a VPN for a process that needed a restart. The two failures
+have different fixes, so they now have different codes: `host-unmounted` says
+rebuild and restart, and carries no network advice at all.
+
+`config.skills` points the feature at another SkillHub (`baseUrl`,
+`feishuPrefix`, `timeoutMs`), validated at boot like `config.terminal`.
 
 ## The New Project form
 
@@ -1249,10 +1508,13 @@ pnpm harness:project-record                           # the project record (incl
 pnpm harness:new-project-form                         # the New Project form, no GUI needed
 pnpm harness:lark-panel                               # the Feishu folder panel, no GUI needed
 pnpm harness:account-dock                             # the account dock + the usage figures, no GUI needed
+pnpm harness:skills-route                             # the marketplace's host half, against a fake SkillHub
+pnpm harness:skills-install                           # the install path: real archives, hostile archives, the scan
 CHROME=<chromium> node scripts/smoke.mjs              # structure, rail, plugin list
 CHROME=<chromium> node scripts/smoke-new-project.mjs  # New Project flow, host mocked at the wire
 CHROME=<chromium> node scripts/preview/measure-form.mjs  # the form's geometry, in a real browser
 CHROME=<chromium> node scripts/preview/measure-stage-tag.mjs  # the stage tag: flow states + painted pixels
+CHROME=<chromium> pnpm preview:skills-cards             # the skills cards' alignment, in a real browser
 ```
 
 `smoke-git.mjs` needs no running GUI and **no login**: it is the only test here
@@ -1322,8 +1584,10 @@ matters here because this deployment's GUI sits behind the QR login gate:
 | `pnpm harness:folder-flow` | the browser flow: the exact request it sends (path **and** project name), that the session opens **before** the folder call, that a success leaves the sidebar strip EMPTY and announces itself through the system banner (re-announced on a repeat run), that a failure goes to the strip and NOT to the banner, every failure sentence read from the real dictionary, and that no dedup copy is reachable any more |
 | `pnpm harness:new-project-form` | the form itself, driven by clicks in jsdom: what it asks for, that opening it touches nothing, the product-card row appearing for `已有产品` and for nothing else (fed by the host's catalogue, which this harness answers), the folder field falling back to the browser on a host with no native chooser, the draft surviving that round trip, what the submission sends — and EDIT mode end to end: the prefill from the record, the read-only directory, the save reaching both `workspace.rename` and the record |
 | `pnpm harness:file-route` | the file page, driven over a real socket against the real route module: that a text file renders with numbered lines and its header, that a file containing `</pre><script>` arrives as TEXT (the page's entire security surface, asserted against the raw bytes), that `escapeHtml` is that one rule, that a missing path / a directory / a binary / a file past the cap each answer with their own sentence, that the theme the GUI passed is the theme the page wears, that the decorative name segment in the URL changes nothing, and that the plugin's own `apply` registers the route under the webserver capability |
+| `pnpm harness:skills-route` | the marketplace's host half, driven over a REAL socket against a local server playing both the login plugin's session route and SkillHub, with every request it received recorded: the search TERM (omitted entirely when blank; trimmed; carried ALONGSIDE the two fixed parameters rather than replacing them, which is the assertion that a term cannot change what is searched; surviving `&`, `=`, `/`, `?`, `#`, `%` and non-ASCII intact; refused past 100 characters as a bad request without asking SkillHub anything; and read off the request's own query string at the route); the token convention (`li.yh9@asiainfo-sec.com` → `li.yh9-skillhub`, case preserved, a bare handle accepted, an address with no local part refused) and the config reader (defaults, a trailing slash and a missing leading one normalized, three malformed values each refused with the field named); the identity CHAIN — the caller's Cookie forwarded to the session route, **the address the LOGIN PLUGIN named** being the one used, and the token check running BEFORE the search; the exact question (`packageType=SKILL` and `label=FDE`, in that order, and **no other parameter** — no limit, no assetOwnership, no q); the mapping (displayName as the title with the slug as its fallback, the summary allowed to be empty, an unknown ownership reading as the quieter PUBLIC, a non-object element still yielding a card, the server's TOTAL travelling while its limit does not); the four refusals of the identity chain (no cookie, an empty cookie, an unauthenticated session, a session with no email — the last two proven to reach no SkillHub hop at all); the token check's refusals (a 401 and a non-zero envelope code both unauthorized, both naming the token the reader must provision, and NEITHER followed by a search; a whoami without an email still yielding a labelled list); the search's refusals (401, a 5xx, a non-zero envelope code carrying the service's own words, a success with no `data`, a body with no `code`, and a body that is not JSON); a REFUSED SOCKET as `unreachable` with the transport cause surviving rather than `fetch failed`; and the route itself — one exact path, a non-GET refused with 405 and `Allow`, every domain failure answered as HTTP 200 content with `ok: false`, and no caching |
+| `pnpm harness:skills-install` | the marketplace's WRITE path, over two local fake hosts (SkillHub and the pre-signed package host) and a scratch skill home: the token riding ONE hop — the hub sees `Bearer li.yh9-skillhub`, **the package host sees no `Authorization` at all** (the live service answers 400 when it does) — and the download's refusals (a 401, a 5xx, a 200 with no redirect, a redirect with no location, a redirect that is not a URL, one that leaves http(s), an expired signature, a body that is not a ZIP, a `content-length` claim past the cap, and a body that ARRIVES past it). The archive's refusal list is asserted with archives the harness BUILDS: `../escape`, a nested escape, an absolute path, a drive letter, a backslash, a control character, a symlink entry, a fifo, an unsupported method, a header that lies about its size, a decompression bomb, too many entries, a Zip64 archive, a truncated one — each refused AND (the half that matters) nothing written, with the extractor's own containment guard probed independently. The write's rules: the name comes from the package's own `SKILL.md` not from the marketplace's display name, a loader-invalid name is refused rather than installed, a second install is `already-installed` **without a second download**, a root that does not exist yet is created (the bug the real download found), a run that fails after claiming the directory removes it, and the provenance record is written. The `SKILL.md` subset parser and the name rules are asserted directly (folded scalars, quotes, CRLF, a BOM, a malformed block ending the read). The scan: the personal/shared split, the loader's RANK order, a shadowed name listed once, `.system` skipped, a flat `.md` skill, a symlinked directory followed, unusable frontmatter ignored, absent roots reported as absent, and no project narrowing rather than failing. And the three routes: exact paths, a GET refused on the write with `Allow`, a POST refused on the reads, a body missing a field answered 400, an install without a session refused as content, and the scan answering WITHOUT one (it reads directories, not SkillHub) |
 | `pnpm harness:lark-panel` | the panel itself, driven by clicks in jsdom over mocked routes: nothing read when no project is selected, one listing per folder opened and none twice, the project's folder name as the link it opens in Feishu, documents opening in Feishu — and, with a web-sidebar capability supplied, the same clicks routing INTO the sidebar with no tab beside them, plus the fallback to a tab when the capability answers false, "load more" asking for the page token the host offered, the MISSING state's create round trip (POST then re-resolve) and its pasted-link round trip, the AMBIGUOUS state offering each candidate and recording the chosen one, a shortcut that points back up its own branch rendering as a row that opens rather than a stack overflow, and a `scope-missing` refusal rendered with the scope to ask for |
-| `pnpm harness:account-dock` | the bottom-left corner, driven by clicks in jsdom: the SEAT PROTOCOL (what owner share `sidebar.account` is handed, that the fallback identity renders when no occupant answers it, that the sign-out row comes from `sidebar.account.menu`, and that Settings is asked for the WIDE trigger rather than the rail circle), the drawer's six rows **in order**, the Usage disclosure opening and closing, the two not-yet-built rows (present, named, tooltipped, carrying an icon, announcing no dialog and no disclosure, and clicking them opening nothing and closing nothing), dismissal by a second click / Escape / a pointerdown outside, the rail expanding the column instead of opening a drawer it could not fit, the **Plugins modal** (the short-name rules; the catalogue heading, search row and count; one card per entry in host order; the phase dots; the 已启用/已停用 tags; the accessible name carrying the phase in words; the detail disclosure showing entry id + configuration + Cordis state, and only the first two for an entry with no live Fiber; the filter matching the module AND the entry id; a refusal carrying the host's own words with a retry that re-reads; an empty inventory saying so; a re-open re-reading the host; Escape closing the modal and leaving the drawer open; and a pointerdown in the page not closing the drawer while a modal is up), and — asserted without any DOM — the token arithmetic behind the Usage block: `formatTokens` at all four magnitudes, the billed-input sum of the three disjoint buckets, the cache-hit percentage and its `null` when nothing was billed, and occupancy preferring `projectedTokens` over the bare sample, falling back to it, and clamping at 100% |
+| `pnpm harness:account-dock` | the bottom-left corner, driven by clicks in jsdom: the SEAT PROTOCOL (what owner share `sidebar.account` is handed, that the fallback identity renders when no occupant answers it, that the sign-out row comes from `sidebar.account.menu`, and that Settings is asked for the WIDE trigger rather than the rail circle), the drawer's six rows **in order**, the Usage disclosure opening and closing, the one row still to build (present, named, tooltipped, carrying an icon, announcing no dialog and no disclosure, and clicking it opening nothing and closing nothing), dismissal by a second click / Escape / a pointerdown outside, the rail expanding the column instead of opening a drawer it could not fit, the **Skills modal** (that the row announces a dialog and no longer promises an unbuilt surface; the title and intro; that opening it reads nothing from the INVENTORY the plugins modal reads; the installed heading and its whole-set count; both scope tabs in order, their selected state and the pane's role/labelling; each empty sentence in its own words, and the state a reader sees WHILE the scan is in flight; that the marketplace is a SECTION with its own count, divider and identity line rather than a third tab; that the installed block is a READ — the personal tab listing what the marketplace wrote with its version as the label, the shared tab listing the other roots with the root each came from, the scanned directories printed, and a FAILED scan taking its own block down while the marketplace keeps rendering; Escape closing it and leaving the drawer open; and, rendered from a fixture, that the installed block lists each scope alone, that a card carries its description, that a refreshed list leaves the reader on the tab they chose, and that a changed installed list leaves the marketplace alone), the **marketplace read** (one read per open, and a re-open re-reading; the loading note and the absence of a count while nothing has answered; the heading counting the server's TOTAL rather than the returned slice; `displayName` as the title; the body chosen from the package, then from a `summary` that says something new, and never from a `summary` that repeats the title — the case the real catalogue is entirely made of, and one the earlier fixtures never rendered because they always gave the two fields different text; the identity line every card carries; no body line for an empty summary; a 个人 tag on a PRIVATE asset and on nothing else; a sentence of its own for each of the SEVEN failure codes; a failed read leaving no stale cards, no count, and the section above it untouched; the retry being a real re-read; and a fixture proving the marketplace lists what the HOST answered rather than the uninstalled skills this deployment knows about), the **install action** (every card carrying an action row; an already-installed asset showing 已安装 with NOTHING to press rather than a disabled button; an installable one offering 安装 with an accessible name; the busy state replacing the button while the host works; a successful install re-reading the installed list — the scan, not a local flag — because the disk is the authority; a refused install explained IN its own card with a retry; the `already-installed` answer rendered as a state with its own sentence; and an install that failed changing nothing), the **search box** (one control above both sections, capped at the route's own limit; the installed list filtering on the KEYSTROKE with no request, matching a DESCRIPTION as well as a name, on whichever tab is showing, with the count following it; a term matching nothing saying 没有匹配的技能 rather than claiming the machine is empty; the marketplace NOT asked on the keystroke but asked exactly once after the debounce, with the term; clearing restoring both halves and asking with no term; a slow answer for an older term NOT replacing a newer one that answered first; and a failed search leaving the installed filter answering), and the client's own transport arms driven through the REAL api with a stubbed `fetch` (the SPA's HTML for a route the host does not know reported as `host-unmounted` **with a sentence that does not mention the VPN** and does name the restart, a rejected `fetch` under the same code, a domain failure's code and sentence passing through untouched, a real-shaped answer mapped field by field, the three unreadable arms, and the dialog rendering what the real api read), the **Plugins modal** (the short-name rules; the catalogue heading, search row and count; one card per entry in host order; the phase dots; the 已启用/已停用 tags; the accessible name carrying the phase in words; the detail disclosure showing entry id + configuration + Cordis state, and only the first two for an entry with no live Fiber; the filter matching the module AND the entry id; a refusal carrying the host's own words with a retry that re-reads; an empty inventory saying so; a re-open re-reading the host; Escape closing the modal and leaving the drawer open; and a pointerdown in the page not closing the drawer while a modal is up), and — asserted without any DOM — the token arithmetic behind the Usage block: `formatTokens` at all four magnitudes, the billed-input sum of the three disjoint buckets, the cache-hit percentage and its `null` when nothing was billed, and occupancy preferring `projectedTokens` over the bare sample, falling back to it, and clamping at 100% |
 
 `harness:folder-route` drives the real `registerLarkRoutes` against a fake
 webserver that hands back the handler, with a stubbed `lark-cli` on disk; the
@@ -1367,6 +1631,42 @@ measured 8px at a 400px-tall viewport and 0px at 320px, because `overflow: hidde
 size. `flex: none` on the rows and the usage body is what made the drawer scroll
 instead.
 
+The marketplace was verified live the same way, one link at a time, because each
+link can fail alone: the route answers `application/json` on a **freshly started**
+host (a second `dsh web` on another port — host code is imported once per process,
+which is the whole reason the first attempt failed); the login plugin's
+`/<prefix>/session` answers the shape this host assumes, both without a cookie
+(`authenticated: false`) and with a minted one (`authenticated: true` plus the
+email); and that cookie then produced `unauthorized … token
+\`rehearsal-skillhub\`` — which proves the entire derivation, because the
+rehearsal identity's address mints exactly that token name. With the REAL
+account's address against the real provider, `searchMarket` returned `ok: true`,
+`total: 2`, and the two published FDE skills (`命名空间测试`, `权限测试`, both
+`PUBLIC`, so neither carries a 个人 tag) mapped field by field.
+
+That same live payload is also what the card's description rules come from, and it
+is worth recording because it looks like a bug and is not: for both assets in this
+deployment's catalogue, SkillHub's `summary` is a COPY of `displayName`
+(`命名空间测试`, `权限测试`), so a card that renders `summary` shows its title twice.
+The package's own `SKILL.md` for the first one carries the real sentence
+(`根据需求文档生成测试用例，支持 Markdown 源文件输出…`) — which is why an installed card
+shows that and an uninstalled one shows its identity line instead. A third asset in
+the same SkillHub (`k8s-ops`) has a full summary, and its card renders it: the field
+is not broken, these two assets simply do not use it.
+
+The INSTALL path was then exercised against the real service too — into a scratch
+skill home, never the operator's `~/.dsh` — and that run is what found the bug the
+harness had hidden: `mkdir` on the skill directory is deliberately non-recursive (so
+`EEXIST` is the refusal), which fails with ENOENT when `<dshHome>/skills` does not
+exist yet, and every harness case had pre-created that root. The fix creates the root
+recursively and keeps the leaf's `mkdir` as the claim, and the harness now installs
+the very first skill into a home with no root at all. The real run: 13 files and
+227,509 bytes unpacked to `…/skills/test-design-case-generator`, the name taken from
+the package's own `SKILL.md`, the provenance record written, the second install
+refused as `already-installed`, and the scan listing it in 个人 with the real
+description. The real package's ZIP is also where the extractor's assumptions come
+from: deflate, at the root, `SKILL.md` present.
+
 The style diff found a second one. Resizing the shipped Settings trigger to the
 drawer's 36px row rhythm was first scoped as "any button inside the drawer in the
 seat" — but `SettingsRoot` renders the trigger AND the settings PANEL as siblings
@@ -1382,6 +1682,20 @@ then reads the geometry back out — the widened card, the folder row's ellipsis
 the three answers on one line, the accent on the chosen answer. It exists because
 a jsdom render has no cascade, so no other test here can tell a styled form from
 an unstyled one.
+
+`scripts/preview/skills-cards.mjs` (`pnpm preview:skills-cards`) is the layout check
+for the skills grids, and it exists because of a bug a jsdom harness could not see:
+the installed block's 公共 tab rendered two cards in one row with bottoms **36px
+apart**, and only a layout engine can say so. It loads the REAL stylesheet
+(`src/client/styles.ts`, imported directly with `--experimental-strip-types`)
+against the component's own DOM shape, then reports each card's box — bottom, head,
+description, tag, action — grouped by row, and exits non-zero when a row's bottoms
+or its action rows disagree. That is what makes the rule it pins testable: the
+plugins modal's grid uses `align-items: start` (fine there, where every card is one
+shape), the skills grids must STRETCH, a card's action row is pinned to its foot
+with `margin-top: auto`, a name is one ellipsised line (a wrapped name moved the tag
+beside it), and the install button and its 已安装 chip are both 24px so installing
+something does not change a card's height.
 
 `scripts/preview/measure-stage-tag.mjs` is the same idea for the FDE flow, with
 one difference that matters: it renders the REAL component (`stage-tag-entry.tsx`,
@@ -1612,6 +1926,33 @@ working.
   `需求.docx` would not satisfy 需求分析, and one saved as `需求分析-草稿.docx`
   would. It also cannot tell a finished document from a stub: the gate proves the
   artifact EXISTS in the project's folder, not that it is any good.
+- **The marketplace needs the company network, and it installs but cannot remove.**
+  `acp.asiainfo-sec.com` does not resolve off the VPN, so the section renders its
+  `unreachable` sentence ("需要公司内网 / VPN") with Node's real cause attached — and
+  that sentence covers ONLY that: a host half which was rebuilt but not restarted is
+  `host-unmounted` and says so, because guessing "VPN" at a stale process is a wrong
+  diagnosis with a wasted afternoon behind it.
+- **Installing has no inverse yet.** It writes `~/.dsh/skills/<name>/` and nothing
+  else, and it refuses to touch a directory that already exists, so
+  **re-installing an updated skill is not possible**: today the fix is to delete the
+  directory by hand and install again. There is no uninstall, no version comparison
+  ("可升级") and no progress bar (a package arrives in one go). What IS recorded is
+  the version each install came from, so an upgrade flow has what it needs.
+- **A skill installed by hand is listed but not attributed.** The provenance file is
+  written only by the installer, so a directory a human copied in (or a git checkout)
+  shows up in 个人 with no marketplace origin — which is exactly right, and means the
+  marketplace card for that asset will still offer to install it.
+- **The marketplace search reads metadata, not packages.** `q` matches what SkillHub
+  indexes — display name and summary — so a term that appears only inside a skill's
+  files finds nothing, even though the card of an INSTALLED skill shows that text
+  (it comes from the package, which the search never opens). It is also a request per
+  settled query, against a documented 60 searches a minute: continuous fast typing can
+  reach that, and the refusal renders as the ordinary failure sentence with a retry.
+- **The marketplace's identity is one convention, not an enforcement.** The token
+  is `handle-skillhub`, derived from the email in the Feishu login session, and
+  this plugin verifies that session before using it — but SkillHub is what decides
+  whether that token exists and what it may read. A wrong or unprovisioned token
+  surfaces as `unauthorized` naming the token, not as an empty list.
 - **A gate matches NAMES and the existence of a FILE, not what is in them.** The
   installer check proves a non-empty file with a package-like name is in the project
   directory; it does not verify the build, the version, the platform or whether the

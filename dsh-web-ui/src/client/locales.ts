@@ -234,6 +234,71 @@ export const zh = {
   'skill.title': '技能',
   'productCard.title': '产品卡',
   'drawer.placeholder': '入口已就位，功能还没接上',
+  // The Skills modal (see SkillsDialog.tsx). The two scopes are the installed
+  // block's TAB names, so they are the two words the product already uses for
+  // "the deployment's" and "mine"; the marketplace is a SECTION, and its empty
+  // sentence says "可安装" rather than "没有" because a marketplace with nothing
+  // on offer is a different fact from a reader having installed nothing.
+  'skill.intro': '这个部署已安装的技能，按公共和个人分开；下面是技能市场里可以安装的公共技能。',
+  'skill.close': '关闭',
+  'skill.installed': '已安装的技能',
+  'skill.market': '技能市场',
+  'skill.scope.public': '公共',
+  'skill.scope.personal': '个人',
+  'skill.empty.public': '还没有安装公共技能。',
+  'skill.empty.personal': '还没有安装个人技能。',
+  'skill.empty.market': '技能市场里没有匹配的技能。',
+  // The marketplace is a READ, so it has three states the installed block does
+  // not. Its sentences come in two parts on purpose: this plugin's sentence says
+  // what the reader should DO about the code, and `{message}` is the host's own
+  // account of what happened (which URL, which status, which token) — the code
+  // alone cannot tell a missing VPN from a missing account.
+  'skill.market.loading': '正在读取技能市场…',
+  // The search box, and the state a query is in while the marketplace is being
+  // asked: "reading" and "searching" are different waits to a reader.
+  'skill.search': '搜索技能',
+  'skill.noMatch': '没有匹配的技能。',
+  'skill.market.searching': '正在技能市场里搜索…',
+  'skill.market.identity': '以 {email} 的身份读取；列表可能包含你自己的个人技能。',
+  'skill.retry': '重试',
+  'skill.tag.personal': '个人',
+  'skill.error.no-session': '拿不到飞书登录会话，无法读取技能市场。{message}',
+  'skill.error.no-email': '飞书登录信息里没有邮箱，推导不出 SkillHub token。{message}',
+  'skill.error.unauthorized': '技能市场拒绝了这个身份。确认这个账号已在 SkillHub 开通对应 token：{message}',
+  'skill.error.unreachable': '连不上技能市场，需要公司内网 / VPN。{message}',
+  'skill.error.http-error': '技能市场返回了错误。{message}',
+  'skill.error.unreadable': '技能市场返回了无法识别的内容。{message}',
+  // The one failure whose fix is NOT on the network. `host-unmounted` means this
+  // plugin's own host half did not answer the route — most often because `dsh
+  // web` is still running a bundle from before the route existed, which the host
+  // reports by serving the SPA's HTML for an unknown path. Worded as the fix, and
+  // deliberately without any network advice: a reader sent to check a VPN for a
+  // stale process is a reader wasting their afternoon.
+  'skill.error.host-unmounted': '技能市场接口没有挂在宿主上：宿主代码改过但进程没重启。重新构建并重启 `dsh web` 后再打开这个弹窗。{message}',
+  // The install path's own failures. Each names the one thing the reader can do,
+  // and the three archive ones are worded so that a refusal is legible as a
+  // REFUSAL — an archive this host would not unpack is a fact about the package,
+  // not a bug in the GUI.
+  'skill.error.unsafe-archive': '这个技能包里有不安全的条目，已经拒绝安装（没有写入任何文件）。{message}',
+  'skill.error.archive-invalid': '下载到的不是一个可读的压缩包。{message}',
+  'skill.error.archive-too-large': '这个技能包超过了本机允许的大小。{message}',
+  'skill.error.already-installed': '同名技能已经装过了，这次没有改动任何文件。{message}',
+  'skill.error.not-a-skill': '这个包不是本机能加载的技能（缺少可读的 SKILL.md）。{message}',
+  'skill.error.no-archive': '没有拿到技能包。{message}',
+  'skill.error.install-failed': '写入技能目录失败。{message}',
+  'skill.error.bad-request': '安装请求不完整。{message}',
+  // The install action and the installed block.
+  'skill.install': '安装',
+  'skill.install.busy': '安装中…',
+  'skill.install.done': '已安装',
+  'skill.install.retry': '重试',
+  'skill.install.aria': '安装技能「{name}」',
+  'skill.installed.loading': '正在读取已安装的技能…',
+  'skill.installed.roots': '已扫描 {n} 个技能目录：{paths}',
+  'skill.tag.user': '用户',
+  'skill.tag.agents': '共享',
+  'skill.tag.project': '项目',
+  'skill.tag.bundled': '内置',
   'term.title': '终端',
   'term.resize': '拖动调整终端高度',
   'term.runs': '运行记录',
@@ -622,6 +687,56 @@ export const en = {
   'skill.title': 'Skills',
   'productCard.title': 'Product cards',
   'drawer.placeholder': 'The entry point is in place; the surface is not built yet',
+  // The Skills modal — see the Chinese dictionary for why the two scopes read as
+  // "Public"/"Personal" and why the marketplace's empty sentence says 可安装.
+  'skill.intro': 'The skills installed in this deployment, split by public and personal; below, the public skills the marketplace can install.',
+  'skill.close': 'Close',
+  'skill.installed': 'Installed skills',
+  'skill.market': 'Skill marketplace',
+  'skill.scope.public': 'Public',
+  'skill.scope.personal': 'Personal',
+  'skill.empty.public': 'No public skills are installed yet.',
+  'skill.empty.personal': 'No personal skills are installed yet.',
+  'skill.empty.market': 'The marketplace has no matching skills.',
+  // The marketplace's read states — see the Chinese dictionary for why each
+  // failure sentence pairs this plugin's advice with the host's own account.
+  'skill.market.loading': 'Reading the skill marketplace…',
+  'skill.search': 'Search skills',
+  'skill.noMatch': 'No skill matches that.',
+  'skill.market.searching': 'Searching the skill marketplace…',
+  'skill.market.identity': 'Read as {email}; the list can include your own personal skills.',
+  'skill.retry': 'Retry',
+  'skill.tag.personal': 'Personal',
+  'skill.error.no-session': 'No Feishu login session is available, so the marketplace cannot be read. {message}',
+  'skill.error.no-email': 'The Feishu login carries no email address, so no SkillHub token can be derived. {message}',
+  'skill.error.unauthorized': 'The marketplace refused this identity. Check that this account has its token provisioned in SkillHub: {message}',
+  'skill.error.unreachable': 'The skill marketplace is unreachable; it needs the company network / VPN. {message}',
+  'skill.error.http-error': 'The skill marketplace answered an error. {message}',
+  'skill.error.unreadable': 'The skill marketplace answered something this plugin cannot read. {message}',
+  // See the Chinese dictionary: this is the restart, and it is not a network
+  // problem, so it carries no network advice.
+  'skill.error.host-unmounted': 'The marketplace route is not mounted on the DSH host: its host code changed but the process was not restarted. Rebuild, restart `dsh web`, then reopen this modal. {message}',
+  // The install path's failures — see the Chinese dictionary.
+  'skill.error.unsafe-archive': 'This package holds an entry this host refuses to unpack, so nothing was installed and nothing was written. {message}',
+  'skill.error.archive-invalid': 'The download is not a readable archive. {message}',
+  'skill.error.archive-too-large': 'This package is larger than this host allows. {message}',
+  'skill.error.already-installed': 'A skill of this name is already installed; nothing was changed. {message}',
+  'skill.error.not-a-skill': 'This package is not a skill this host can load (it has no readable SKILL.md). {message}',
+  'skill.error.no-archive': 'No package was received. {message}',
+  'skill.error.install-failed': 'Writing the skill directory failed. {message}',
+  'skill.error.bad-request': 'The install request was incomplete. {message}',
+  // The install action and the installed block.
+  'skill.install': 'Install',
+  'skill.install.busy': 'Installing…',
+  'skill.install.done': 'Installed',
+  'skill.install.retry': 'Retry',
+  'skill.install.aria': 'Install the skill “{name}”',
+  'skill.installed.loading': 'Reading the installed skills…',
+  'skill.installed.roots': 'Scanned {n} skill directories: {paths}',
+  'skill.tag.user': 'User',
+  'skill.tag.agents': 'Shared',
+  'skill.tag.project': 'Project',
+  'skill.tag.bundled': 'Bundled',
   'term.title': 'Terminal',
   'term.resize': 'Drag to resize the terminal',
   'term.runs': 'Runs',

@@ -94,7 +94,8 @@ export function Shell(props: ShellProps): ReactNode {
     collapsed, width, renderSlot, t,
     useSessions, useWorkspaces, useStore, actions,
     startSession, toggleSidebar, listDirectory, createDirectory,
-    selectProject, renameWorkspace, deleteWorkspace, listPlugins, openInSidebar,
+    selectProject, renameWorkspace, deleteWorkspace, listPlugins, listMarketSkills,
+    listInstalledSkills, installMarketSkill, openInSidebar,
   } = props
 
   // Wide content stays mounted while the collapse animates, unmounts at
@@ -339,9 +340,16 @@ export function Shell(props: ShellProps): ReactNode {
         <AccountDock
           wide={wide}
           expandSidebar={() => { if (collapsed) toggleSidebar() }}
+          // The skills modal scans the PROJECT's skill roots too, so the dock needs
+          // the project this column is scoped to. It is the same fact the session
+          // list and the Feishu panel already read from the scope above.
+          projectPath={selected?.path}
           renderSlot={renderSlot}
           useSessions={useSessions}
           listPlugins={listPlugins}
+          listMarketSkills={listMarketSkills}
+          listInstalledSkills={listInstalledSkills}
+          installMarketSkill={installMarketSkill}
           t={t}
         />
       </div>

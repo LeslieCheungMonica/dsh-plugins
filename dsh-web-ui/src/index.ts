@@ -41,6 +41,7 @@ import type {} from '@deepseek-ai/dsh-subprocess'
 import { registerFileRoutes } from './host/file-routes.ts'
 import { registerGitRoutes } from './host/git-routes.ts'
 import { registerLarkRoutes } from './host/routes.ts'
+import { readSkillOptions, registerSkillRoutes } from './host/skills.ts'
 import { createTerminalService, readTerminalOptions } from './host/term.ts'
 import { registerTerminalRoutes } from './host/term-routes.ts'
 
@@ -57,23 +58,32 @@ import { registerTerminalRoutes } from './host/term-routes.ts'
  * this row before a single route is registered. A disabled feature must not leave
  * a live command-execution endpoint behind, and the client half renders no
  * control for it either way.
+ *
+ * The skill marketplace uses the FIRST of those scopes: it needs a webserver to
+ * answer on and the LOOPBACK PORT of that webserver to ask the login plugin's
+ * session route who the caller is (see host/skills.ts — that hop is how a
+ * per-reader SkillHub token is derived without a second plugin's secret).
  * @param ctx - the plugin context.
- * @param config - this row's config; `config.terminal` tunes the command bar.
+ * @param config - this row's config; `config.terminal` tunes the command bar and
+ * `config.skills` points the marketplace at a SkillHub deployment.
  */
 export function apply(ctx: Context, config?: unknown): void {
+  const row = config as { terminal?: unknown; skills?: unknown } | undefined
+
+  // Validated here, at boot, so a bad value fails loudly with the field named
+  // rather than surfacing later as odd behaviour inside a panel.
+  const skills = readSkillOptions(row?.skills)
+
   ctx.inject(['webServer'], (httpCtx) => {
     registerLarkRoutes(httpCtx)
     registerGitRoutes(httpCtx)
     // The file page a transcript's file link opens in the GUI (see
     // host/file-routes.ts and the client's `fileViewer` capability).
     registerFileRoutes(httpCtx)
+    registerSkillRoutes(httpCtx, skills)
   })
 
-  // Validated here, at boot, so a bad value fails loudly with the field named
-  // rather than surfacing later as odd behaviour inside a panel.
-  const options = readTerminalOptions(
-    (config as { terminal?: unknown } | undefined)?.terminal,
-  )
+  const options = readTerminalOptions(row?.terminal)
 
   if (!options.enabled) return
 

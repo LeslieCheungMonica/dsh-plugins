@@ -37,7 +37,10 @@
     "harness:new-project-form": "node scripts/harness/tsdown.mjs && node scripts/harness/new-project-form.mjs",
     "harness:lark-panel": "node scripts/harness/tsdown.mjs && node scripts/harness/lark-panel.mjs",
     "harness:account-dock": "node scripts/harness/tsdown.mjs && node scripts/harness/account-dock.mjs",
-    "harness:file-route": "node scripts/harness/file-route.mjs"
+    "harness:skills-route": "node scripts/harness/tsdown.mjs && node scripts/harness/skills-route.mjs",
+    "harness:skills-install": "node scripts/harness/tsdown.mjs && node scripts/harness/skills-install.mjs",
+    "harness:file-route": "node scripts/harness/file-route.mjs",
+    "preview:skills-cards": "node --experimental-strip-types scripts/preview/skills-cards.mjs"
   },
   "devDependencies": {
     "tsdown": "^0.22.2",

@@ -34,6 +34,7 @@ import { AsiaInfoMark } from './AsiaInfoMark.tsx'
 import { FallbackBrandControls } from './FallbackBrandControls.tsx'
 import { ActionBar } from './ActionBar.tsx'
 import { SessionList } from './SessionList.tsx'
+import { installMarketSkill, listInstalledSkills, searchMarketSkills } from './skillapi.ts'
 import { Shell } from './Shell.tsx'
 import { NS, type ShellInjected } from './contract.ts'
 import { en, zh } from './locales.ts'
@@ -203,6 +204,17 @@ export function apply(ctx: ClientContext): void {
       }
       return listPlugins()
     },
+    // The marketplace read goes the other way: it is this plugin's OWN host
+    // half, so there is no unit to wait for and no capability to probe. The
+    // host answers failures as content (`{ ok: false, error }`), which is why
+    // this method never throws for a domain reason — see `skillapi.ts`.
+    listMarketSkills: (term) => searchMarketSkills(term),
+    // The install and the scan are the same story: this plugin's own host half,
+    // answering failures as content. The install is the ONE write this plugin
+    // performs, and it is the host that decides where it lands — the browser names
+    // a namespace and a slug and nothing else.
+    listInstalledSkills: (projectPath) => listInstalledSkills(projectPath),
+    installMarketSkill: (request) => installMarketSkill(request),
     // `false` is the honest answer while no sidebar is armed: the caller then
     // opens a tab, which is what a link did before this capability existed.
     openInSidebar: (url) => openInSidebar?.(url) ?? false,

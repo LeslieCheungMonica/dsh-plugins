@@ -1903,6 +1903,376 @@ const SHELL = `
   line-height: 17px;
 }
 
+/* ── skills modal ───────────────────────────────────────────────────────
+   The account drawer's Skills modal: an installed block whose two scopes are
+   TABS, a divider, and the public marketplace below it. It borrows the plugins
+   modal's geometry and tokens (the same heading-plus-count row, the same card
+   language) because the two are siblings opened from the same drawer, and the
+   tab strip is the Git drawer's own strip re-scaled to a modal's rhythm rather
+   than a third design for "two mutually exclusive views".
+
+   The card is reached from the CONTENT rather than from the modal's own class:
+   that class is a hashed CSS-module name this plugin does not own, so the :has()
+   selector asks the structural question instead. */
+.dsh-web-ui-skills:has([data-wui='skillsDialog']) {
+  /* 936px = the 720px this started at, +30%. The host card's own width is
+     min(380px, 100%) (Modal.module.css), which is right for a one-field prompt and
+     far too narrow for a two-column card grid, so this rule has to beat it: a class
+     selector plus :has() out-specifies the primitive's single class, and the :has()
+     asks the structural question rather than naming a hashed CSS-module class this
+     plugin does not own. A 100% cap still applies on a narrow viewport, inside the
+     modal layer's own 24px padding. */
+  width: min(936px, 100%);
+}
+
+[data-wui='skillsDialog'] {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: 100%;
+  min-width: 0;
+  color: var(--dsw-alias-label-primary);
+}
+
+/* The search row: fixed at the top of the body, above both sections, so it drives
+   them without scrolling away. It does not shrink. */
+[data-wui='skillSearch'] {
+  flex: none;
+}
+
+[data-wui='skillSearchField'] {
+  display: block;
+  width: 100%;
+}
+
+[data-wui='skillInstalled'],
+[data-wui='skillMarket'] {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+/* The heading row is the plugins modal's: a section title with its count, so the
+   two modals read as the same kind of surface. */
+[data-wui='skillInstalledHeading'],
+[data-wui='skillMarketHeading'] {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  padding: 0 2px;
+}
+
+[data-wui='skillInstalledHeading'] h3,
+[data-wui='skillMarketHeading'] h3 {
+  margin: 0;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 600;
+}
+
+[data-wui='skillInstalledHeading'] span,
+[data-wui='skillMarketHeading'] span {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The scope strip. A full-width rule under it is what makes the two tabs read as
+   views of the block above rather than as two more buttons. */
+[data-wui='skillTabs'] {
+  display: flex;
+  gap: 2px;
+  border-bottom: 1px solid var(--dsw-alias-border-l1);
+}
+
+[data-wui='skillTab'] {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 10px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+[data-wui='skillTab']:hover {
+  color: var(--dsw-alias-label-primary);
+}
+
+[data-wui='skillTab'][data-active='true'] {
+  border-bottom-color: var(--dsh-web-ui-accent);
+  color: var(--dsw-alias-label-primary);
+  font-weight: 600;
+}
+
+[data-wui='skillTab']:focus-visible {
+  outline: 2px solid var(--dsw-alias-state-business-primary);
+  outline-offset: -2px;
+}
+
+[data-wui='skillPane'] {
+  min-width: 0;
+}
+
+/* Both lists scroll inside a bounded region, so the modal cannot grow past the
+   viewport: the shared Modal card clips its own overflow, so an unbounded grid
+   would silently cut the marketplace off the bottom of the screen. */
+[data-wui='skillGrid'],
+[data-wui='skillMarketGrid'] {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  /* STRETCH, not "start". The plugins modal's grid uses "start" because every card
+     there is the same shape; a skill card is not — a description that wraps one
+     more line than its neighbour's left the two bottoms 36px apart, which is the
+     misalignment this rule exists to fix. A row's cards now share the row's
+     height, and the row is as tall as its tallest card. */
+  align-items: stretch;
+  gap: 10px;
+  max-height: min(200px, calc(100vh - 520px));
+  overflow-y: auto;
+  margin: 0;
+  padding: 2px;
+  list-style: none;
+  --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);
+  --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);
+}
+
+/* One column when the modal is narrow (a small viewport caps the card), so a
+   description never has to share 150px with its own name. */
+@media (max-width: 620px) {
+  [data-wui='skillGrid'],
+  [data-wui='skillMarketGrid'] { grid-template-columns: minmax(0, 1fr); }
+}
+
+[data-wui='skillCard'],
+[data-wui='skillMarketCard'] {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 11px 14px 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 10px;
+  background: var(--dsw-alias-bg-layer-3);
+}
+
+/* Name and tag share a row, so the tag never pushes the description down. */
+[data-wui='skillCardHead'] {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+[data-wui='skillName'] {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The marketplace's own label: a skill in the list that belongs to one person
+   rather than to the deployment. Neutral, like the plugins modal's 已停用 chip —
+   it is a fact about the asset, not a warning and not a success. */
+[data-wui='skillTag'] {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+/* The identity line: which asset and which version, under the description (or in
+   its place, when the marketplace had no description to give). Tertiary and small,
+   because it is a fact to look up rather than something to read. */
+[data-wui='skillMeta'] {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+[data-wui='skillDescription'] {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+/* The action row a card carries when it can be acted on. The button is the
+   marketplace's install control, and it sits at the card's foot so a two-column
+   grid keeps its rows aligned on the name rather than on the button. */
+[data-wui='skillCardActions'] {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+  /* "auto" pushes the row to the card's foot, which is what makes two buttons in
+     one row sit at the same height when the text above them differs. */
+  margin-top: auto;
+  padding-top: 2px;
+}
+
+[data-wui='skillInstallButton'] {
+  box-sizing: border-box;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  border: 1px solid var(--dsh-web-ui-accent);
+  border-radius: 6px;
+  padding: 0 10px;
+  background: transparent;
+  color: var(--dsh-web-ui-accent);
+  font: inherit;
+  font-size: 12px;
+  line-height: 16px;
+  cursor: pointer;
+}
+
+[data-wui='skillInstallButton']:hover {
+  background: color-mix(in srgb, var(--dsh-web-ui-accent) 10%, transparent);
+}
+
+[data-wui='skillInstallButton']:focus-visible {
+  outline: 2px solid var(--dsw-alias-state-business-primary);
+  outline-offset: 1px;
+}
+
+/* Neither of these is a button: 已安装 is what the DISK says (the host refuses to
+   touch a directory that exists), and the busy state is a request in flight. Both
+   are states a reader reads rather than presses. */
+/* The same 24px as the button they replace, so a card does not change height when
+   its skill is installed — which is exactly what made an installed card sit 4px
+   shorter than an installable one in the same row. */
+[data-wui='skillInstallDone'],
+[data-wui='skillInstallBusy'] {
+  box-sizing: border-box;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 8px;
+  border-radius: 5px;
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+[data-wui='skillInstallDone'] {
+  background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 10%, transparent);
+  color: var(--dsw-alias-state-success-primary);
+}
+
+[data-wui='skillInstallBusy'] {
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-secondary);
+}
+
+/* A failed install says why IN the card it belongs to: the reader pressed a button
+   labelled with that skill's name, and a sentence anywhere else would leave them
+   looking for which one failed. */
+[data-wui='skillInstallError'] {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--dsw-alias-state-error-primary);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+/* Which directories the scan looked in — the answer to "I installed it, where did
+   it go", and the difference between "no skills" and "no roots". */
+[data-wui='skillRoots'] {
+  margin: 0;
+  padding: 0 2px;
+  overflow-wrap: anywhere;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+  line-height: 17px;
+}
+
+/* An empty list is a sentence, not an empty grid — and each of the three says
+   which one it is, because "nothing installed" and "nothing matches" are
+   different facts about a deployment. The marketplace's identity line is the
+   same type, one step quieter, because it is a scope note rather than a state. */
+[data-wui='skillNote'],
+[data-wui='skillMarketNote'],
+[data-wui='skillMarketIdentity'] {
+  margin: 0;
+  padding: 0 2px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+[data-wui='skillMarketIdentity'] {
+  font-size: 12px;
+  line-height: 18px;
+}
+
+/* The marketplace's failure: the plugins modal's own failure row, so one
+   deployment's two modals report a bad read the same way. */
+[data-wui='skillFailure'] {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 2px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dsw-alias-state-error-primary);
+}
+
+[data-wui='skillFailure'] p {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+[data-wui='skillFailure'] button {
+  flex: none;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 6px;
+  padding: 4px 10px;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  cursor: pointer;
+}
+
+[data-wui='skillFailure'] button:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+/* The two sections are read differently — one is what this deployment HAS, the
+   other what it COULD install — so the rule between them says so. */
+[data-wui='skillDivider'] {
+  flex: none;
+  height: 1px;
+  margin: 2px 0;
+  background: var(--dsw-alias-border-l1);
+}
+
 /* ── project-scoped session list ─────────────────────────────────────── */
 
 [data-wui='sessionList'] {

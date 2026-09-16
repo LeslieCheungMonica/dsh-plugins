@@ -24,6 +24,11 @@ import type {
 // build (this plugin takes no runtime dependency on the remote layer — the
 // namespace arrives through `ctx.inject` in the browser half).
 import type { PluginInventorySnapshot } from '@deepseek-ai/dsh-api-remotes/client'
+// Type-only, the same way: the marketplace's wire shapes, shared with the host
+// half that produces them.
+import type {
+  InstalledSkillSnapshot, SkillInstallRequest, SkillInstallResult, SkillMarketSnapshot, SkillResponse,
+} from '../shared/skillswire.ts'
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import type {
@@ -92,6 +97,46 @@ export interface ShellInjected {
    * empty list — "nothing is loaded" and "nobody can say" are different answers.
    */
   listPlugins: () => Promise<PluginInventorySnapshot>
+  /**
+   * Read the skill marketplace: which FDE skills this deployment's SkillHub
+   * publishes.
+   *
+   * Like {@link ShellInjected.listPlugins}, this is a read the browser may not
+   * perform itself — the host derives a per-reader SkillHub token from the
+   * session cookie and never hands it over — so it arrives as this face's
+   * method rather than as a URL a component fetches. The identity travels as the
+   * cookie the browser already holds, and the two parameters that define what this
+   * deployment searches are host-side constants: the only thing a caller may add is
+   * a search TERM, which narrows within that frame and cannot name an identity, ask
+   * for another asset type, or widen the scope (see `shared/skillswire.ts`).
+   *
+   * It never rejects for a *domain* failure: an unreachable SkillHub, a refused
+   * token, and a login without an email all resolve to `{ ok: false, error }`
+   * with a code the modal phrases, because all three are states a reader can be
+   * looking at. A rejection here means the DSH host itself could not be reached.
+   *
+   * @param term - the reader's search term; omitted reads the whole catalogue.
+   */
+  listMarketSkills: (term?: string) => Promise<SkillResponse<SkillMarketSnapshot>>
+  /**
+   * What is installed on THIS host, split the way the modal shows it.
+   *
+   * @param projectPath - the selected project's directory, so the project's two
+   * skill roots are scanned as well. Absent means "no project", which narrows the
+   * list rather than failing: a reader with no project selected still sees their
+   * own skills and the shared ones.
+   */
+  listInstalledSkills: (projectPath?: string) => Promise<SkillResponse<InstalledSkillSnapshot>>
+  /**
+   * Install one marketplace skill onto this host.
+   *
+   * The ONLY write this plugin performs, and the only face method whose answer can
+   * be `already-installed`: the host refuses to touch a directory that exists, so a
+   * second click on an installed skill changes nothing. The browser names the skill
+   * by namespace and slug — never a path, a URL, or a directory — so the caller
+   * cannot steer the write.
+   */
+  installMarketSkill: (request: SkillInstallRequest) => Promise<SkillResponse<SkillInstallResult>>
 }
 
 /**

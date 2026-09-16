@@ -47,6 +47,7 @@ import {
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ShellProps } from './contract.ts'
 import { PluginsDialog } from './PluginsDialog.tsx'
+import { SkillsDialog } from './SkillsDialog.tsx'
 import { UsagePanel } from './UsagePanel.tsx'
 
 /**
@@ -57,7 +58,11 @@ import { UsagePanel } from './UsagePanel.tsx'
  * picking folders) that it never calls.
  */
 export type AccountDockProps =
-  & Pick<ShellProps, 'renderSlot' | 'useSessions' | 'listPlugins' | 't'>
+  & Pick<
+    ShellProps,
+    'renderSlot' | 'useSessions' | 'listPlugins' | 'listMarketSkills' | 'listInstalledSkills'
+    | 'installMarketSkill' | 't'
+  >
   & {
     /** Whether the column renders wide content (false = 56px rail). */
     wide: boolean
@@ -66,6 +71,15 @@ export type AccountDockProps =
      * width for a drawer, and this column clips its own overflow.
      */
     expandSidebar: () => void
+    /**
+     * The selected project's directory, when there is one.
+     *
+     * The skills modal needs it for ONE thing: a project's skill roots
+     * (`<project>/.dsh/skills`, `<project>/.agents/skills`) are part of what is
+     * installed, and they are per project. It travels as a path because a skill root
+     * IS a path. An absent value narrows the scan rather than failing it.
+     */
+    projectPath: string | undefined
   }
 
 /**
@@ -77,12 +91,12 @@ export type AccountDockProps =
 const FALLBACK_BRAND = 'ForgeX'
 
 /**
- * What the two not-yet-built rows do when clicked: nothing.
+ * What the not-yet-built 产品卡 row does when clicked: nothing.
  *
  * It is a named constant rather than an inline `() => {}` so the intent is
  * greppable — one symbol says "this gesture is a placeholder" and disappears with
- * the surfaces it stands for, instead of a dozen silently empty arrows that read
- * like a dropped handler.
+ * the surface it stands for, instead of a silently empty arrow that reads like a
+ * dropped handler.
  */
 const PLACEHOLDER_CLICK = (): void => {}
 
@@ -115,28 +129,33 @@ function ProductCardGlyph({ size }: { size: number }): ReactNode {
  * @returns the dock element tree.
  */
 export function AccountDock(props: AccountDockProps): ReactNode {
-  const { wide, expandSidebar, renderSlot, useSessions, listPlugins, t } = props
+  const {
+    wide, expandSidebar, projectPath, renderSlot, useSessions, listPlugins, listMarketSkills,
+    listInstalledSkills, installMarketSkill, t,
+  } = props
   const [open, setOpen] = useState(false)
   const [usageOpen, setUsageOpen] = useState(false)
   const [pluginsOpen, setPluginsOpen] = useState(false)
+  const [skillsOpen, setSkillsOpen] = useState(false)
   const rootRef = useRef<HTMLDivElement | null>(null)
 
   // A pointerdown anywhere else closes the drawer — the same rule every other
-  // trigger-owned popover in this composition follows. Suspended while the
-  // Plugins modal is up: that modal portals to the page body, so every click in
-  // it is "outside" this root, and letting it close the drawer would mean closing
-  // the modal also drops the reader out of the corner they opened it from.
-  useDismissOnOutsidePointer(rootRef, open && wide && !pluginsOpen, setOpen)
+  // trigger-owned popover in this composition follows. Suspended while EITHER
+  // modal is up: those modals portal to the page body, so every click in one is
+  // "outside" this root, and letting it close the drawer would mean closing a
+  // modal also drops the reader out of the corner they opened it from.
+  useDismissOnOutsidePointer(rootRef, open && wide && !pluginsOpen && !skillsOpen, setOpen)
 
   useEffect(() => {
-    // One gesture dismisses ONE surface. Two modals can sit above this drawer —
-    // this plugin's own Plugins modal, and the shipped settings panel that the
-    // Settings row opens — and both listen for Escape on the document. Those
-    // listeners were registered after this one, so this handler runs first, while
-    // the modal is still up: standing down on a live `[role="dialog"]` is what
-    // keeps Escape from closing the drawer out from under the surface the reader
-    // was actually dismissing. It is a property of the page, not of either modal,
-    // so it needs to know nothing about who opened one.
+    // One gesture dismisses ONE surface. Three surfaces can sit above this drawer
+    // — this plugin's own Plugins and Skills modals, and the shipped settings
+    // panel that the Settings row opens — and all of them listen for Escape on the
+    // document. Those listeners were registered after this one, so this handler
+    // runs first, while the modal is still up: standing down on a live
+    // `[role="dialog"]` is what keeps Escape from closing the drawer out from
+    // under the surface the reader was actually dismissing. It is a property of
+    // the page, not of any one modal, so it needs to know nothing about who opened
+    // one.
     if (!open || !wide) return
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key !== 'Escape') return
@@ -211,22 +230,26 @@ export function AccountDock(props: AccountDockProps): ReactNode {
           <span data-wui="drawerRowLabel">{t('plugin.title')}</span>
         </button>
 
-        {/* Two ENTRY POINTS whose surfaces are not built yet. The rows are here so
-            the drawer's final shape can be seen and reviewed, and the click is
-            deliberately inert ({@link PLACEHOLDER_CLICK}). Each carries a tooltip
-            saying so, because a control that silently does nothing reads as a bug
-            — and that tooltip is the one thing to delete when the surface lands. */}
+        {/* The Skills modal's trigger. It was the placeholder that stood here
+            while the surface did not exist; the row, its icon and its label are
+            unchanged — only the gesture is real now, so the `data-placeholder`
+            marker and its "功能还没接上" tooltip are gone with it. */}
         <button
           type="button"
           data-wui="drawerRow"
-          data-placeholder="true"
-          title={t('drawer.placeholder')}
-          onClick={PLACEHOLDER_CLICK}
+          aria-haspopup="dialog"
+          aria-expanded={skillsOpen}
+          onClick={() => { setSkillsOpen(true) }}
         >
           <span data-wui="drawerRowIcon" aria-hidden="true"><IconSkillOutline16 size={16} /></span>
           <span data-wui="drawerRowLabel">{t('skill.title')}</span>
         </button>
 
+        {/* The ONE entry point whose surface is not built yet. The row is here so
+            the drawer's final shape can be seen and reviewed, and the click is
+            deliberately inert ({@link PLACEHOLDER_CLICK}). It carries a tooltip
+            saying so, because a control that silently does nothing reads as a bug
+            — and that tooltip is the one thing to delete when the surface lands. */}
         <button
           type="button"
           data-wui="drawerRow"
@@ -278,15 +301,24 @@ export function AccountDock(props: AccountDockProps): ReactNode {
         </button>
       </Tooltip>
 
-      {/* The Plugins modal. Rendered BESIDE the drawer rather than inside it, and
-          that is load-bearing: it portals to the page body, so the column's own
-          clipping cannot cut it, and keeping it out of the drawer's dismiss scope
-          is what lets the drawer stay open behind it — the same courtesy the
-          shipped settings modal gets from the row below. */}
+      {/* The two modals. Rendered BESIDE the drawer rather than inside it, and
+          that is load-bearing: they portal to the page body, so the column's own
+          clipping cannot cut them, and keeping them out of the drawer's dismiss
+          scope is what lets the drawer stay open behind them — the same courtesy
+          the shipped settings modal gets from the row below. */}
       <PluginsDialog
         open={pluginsOpen}
         onClose={() => { setPluginsOpen(false) }}
         listPlugins={listPlugins}
+        t={t}
+      />
+      <SkillsDialog
+        open={skillsOpen}
+        onClose={() => { setSkillsOpen(false) }}
+        projectPath={projectPath}
+        listMarketSkills={listMarketSkills}
+        listInstalledSkills={listInstalledSkills}
+        installMarketSkill={installMarketSkill}
         t={t}
       />
     </div>

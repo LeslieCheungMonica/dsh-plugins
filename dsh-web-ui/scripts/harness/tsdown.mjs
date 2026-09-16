@@ -1,8 +1,9 @@
 /**
- * Bundle the New Project flow, its form, the Feishu folder panel, and the
- * account dock for the offline harnesses (`folder-flow.mjs`,
- * `new-project-form.mjs` through `form-entry.tsx`, `lark-panel.mjs` through
- * `panel-entry.tsx`, and `account-dock.mjs` through `account-entry.tsx`).
+ * Bundle the New Project flow, its form, the Feishu folder panel, the account
+ * dock, and the skill marketplace's host half for the offline harnesses
+ * (`folder-flow.mjs`, `new-project-form.mjs` through `form-entry.tsx`,
+ * `lark-panel.mjs` through `panel-entry.tsx`, `account-dock.mjs` through
+ * `account-entry.tsx`, and `skills-route.mjs` through `skills-entry.ts`).
  *
  * The harnesses verify the flow and the panel through the code the shipped client
  * bundle actually contains, so they are bundled from source rather than
@@ -51,12 +52,17 @@ await build({
     'new-project-form': new URL('./form-entry.tsx', here).pathname,
     'lark-panel': new URL('./panel-entry.tsx', here).pathname,
     'account-dock': new URL('./account-entry.tsx', here).pathname,
+    'skills-route': new URL('./skills-entry.ts', here).pathname,
+    'skills-install': new URL('./skills-entry.ts', here).pathname,
   },
   outDir: new URL('./out', here).pathname,
   format: ['esm'],
   platform: 'browser',
   target: 'es2022',
-  deps: { neverBundle: ['react', 'react/jsx-runtime', 'react-dom'] },
+  // Node built-ins are external to every bundle here — one entry is HOST code that
+  // reads the filesystem — and naming them keeps the browser-targeted build from
+  // warning about every one of them.
+  deps: { neverBundle: ['react', 'react/jsx-runtime', 'react-dom', /^node:/u] },
   alias: { '@deepseek-ai/dsh-client-ui-primitives': stubGenerated },
   dts: false,
   clean: true,
