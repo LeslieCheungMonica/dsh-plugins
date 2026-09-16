@@ -16,13 +16,18 @@
  *   than replacing it, so installing this plugin cannot remove another plugin's
  *   chrome.
  *
- * The bar is pinned below the frame's account chip, and it moves left when the
- * sidebar opens so it stays clickable — the sidebar is docked to the right edge
- * and would otherwise cover it.
+ * The launcher renders into `dsh-web-ui`'s shared action strip when that plugin is
+ * present (its `shell.action` seat), and pins its own bar when it is not — the
+ * row the operator asked for is one line of controls at the conversation header's
+ * right, and two plugins cannot each own half of one line by positioning
+ * themselves independently. Either way the sidebar it opens is docked to the right
+ * edge and would cover the controls, so space is reserved to their right while it
+ * is open: in-row through the strip's `--dsh-web-ui-bar-shift`, alone through the
+ * bar's own inline offset.
  *
  * @module my-sider/client/Launcher
  */
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { IconCodeOutline16, IconGlobeOutline14, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { SessionId, SessionListState, WorkspaceListState, WorkspaceView } from '@deepseek-ai/dsh-client-runtime/client'
@@ -34,11 +39,26 @@ import { DEFAULT_WIDTH, MAX_WIDTH_SLACK, MIN_WIDTH, WebPanel } from './WebPanel.
 const OPEN_WEB_KEY = 'my-sider.web.open'
 const OPEN_SHELL_KEY = 'my-sider.shell.open'
 
-/** Where the bar sits: below the frame's account chip and any peer control row. */
-const BAR_TOP = 88
+/**
+ * Where the pinned bar sits when this plugin has no shared strip to live in:
+ * just above the conversation header's hairline (y=74 at the frame's own header
+ * height), matching where `dsh-web-ui`'s row puts the same controls.
+ */
+const BAR_TOP = 40
 
 /** Distance from the viewport's right edge when nothing is docked under the bar. */
 const BAR_RIGHT = 24
+
+/**
+ * The custom property the shared strip honors as space reserved to its right.
+ *
+ * A cross-plugin CSS contract, and the only one here: the strip's right edge
+ * belongs to the plugin that renders it, so a peer whose docked panel covers that
+ * corner cannot move its own controls out of the way — it can only ask the whole
+ * row to step aside. The name is `dsh-web-ui`'s, documented there beside the two
+ * offsets a deployment already tunes.
+ */
+const BAR_SHIFT_PROPERTY = '--dsh-web-ui-bar-shift'
 
 /**
  * Read one persisted flag.
@@ -114,7 +134,7 @@ function BarButton({ label, title, active, onClick, children }: {
  * @param props - the frame's global session/workspace hooks and the translator.
  * @returns the bar and whichever panels are open.
  */
-export function Launcher({ useSessions, useWorkspaces, t }: LauncherProps): ReactNode {
+export function Launcher({ useSessions, useWorkspaces, inRow, t }: LauncherProps): ReactNode {
   const [webOpen, setWebOpen] = useState(() => readFlag(OPEN_WEB_KEY))
   const [shellOpen, setShellOpen] = useState(() => readFlag(OPEN_SHELL_KEY))
   const [webWidth, setWebWidth] = useState(readWebWidth)
@@ -179,14 +199,32 @@ export function Launcher({ useSessions, useWorkspaces, t }: LauncherProps): Reac
     }
   }, [])
 
+  // Inside the shared strip this plugin's controls cannot step aside on their
+  // own: the strip is one unit and its right edge belongs to whichever plugin
+  // rendered it. So the space is RESERVED instead — the open sidebar's width goes
+  // into the property the row honors, and the whole row slides clear. Written on
+  // `document.body` because the row is a sibling in the frame's overlay layer and
+  // body is the nearest ancestor the two share. Alone, the bar keeps its own
+  // inline offset and needs none of this.
+  useEffect(() => {
+    if (!inRow || !webOpen) return
+    const body = document.body
+    body.style.setProperty(BAR_SHIFT_PROPERTY, `${Math.round(webWidth) + 16}px`)
+    return () => { body.style.removeProperty(BAR_SHIFT_PROPERTY) }
+  }, [inRow, webOpen, webWidth])
+
   return (
     <>
       <div
         data-ms="bar"
-        role="toolbar"
-        aria-label={t('launcher.aria')}
-        aria-orientation="horizontal"
-        style={{ top: BAR_TOP, right: webOpen ? webWidth + 16 : BAR_RIGHT }}
+        data-inline={inRow || undefined}
+        // The shared strip is already a toolbar with its own accessible name, so
+        // in-row this is a plain group of the strip's controls; alone, it is the
+        // toolbar and has to say so itself.
+        role={inRow ? undefined : 'toolbar'}
+        aria-label={inRow ? undefined : t('launcher.aria')}
+        aria-orientation={inRow ? undefined : 'horizontal'}
+        style={inRow ? undefined : { top: BAR_TOP, right: webOpen ? webWidth + 16 : BAR_RIGHT }}
       >
         <BarButton
           label={t('launcher.web')}

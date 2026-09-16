@@ -13,7 +13,8 @@ both surfaces can be switched off independently in its Loader row.
 
 ```text
 ┌───────────────────────────────────────────────┬──────────────────────┐
-│                                               │ 网页侧边栏           │
+│  the session header        [Git][侧边栏][下侧边栏]                    │
+│ ───────────────────────────────────────────── │ 网页侧边栏           │
 │                  DSH chat                     │ ┌────┬────┬─┐        │
 │                                               │ │tab │tab │+│        │
 │                                               │ ├────┴────┴─┴──────┐ │
@@ -32,16 +33,40 @@ both surfaces can be switched off independently in its Loader row.
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-## The launcher
+## The launcher, and the row it shares
 
-Two controls, registered into the frame's `shell.overlay` seat (the additive,
-root-scope, click-through floating layer). They sit below the account chip and
-shift left while the sidebar is open, so they stay clickable.
+Two controls — **侧边栏** and **下侧边栏** — that open the two panels below.
 
 | Control | What it does |
 |---|---|
 | **侧边栏** | opens / closes the web sidebar |
 | **下侧边栏** | opens / closes the bottom command panel |
+
+They render into a **shared action row**: the one horizontal strip of controls at
+the conversation header's right, above its hairline. That row is `dsh-web-ui`'s —
+it declares a `shell.action` list seat inside its own ActionBar registration and
+renders it in the strip — and this plugin registers ONE entry into it
+(`inRow: true`). Two independently `position: fixed` bars cannot make one row:
+each would have to know the other's width to know where to start, and that
+arithmetic breaks silently the moment either side gains a control. So the row is
+theirs and the controls are ours: this plugin still owns its buttons' look, its
+open flags, and both panels.
+
+**The fallback is bounded.** A deployment that installs this plugin WITHOUT
+`dsh-web-ui` never declares `shell.action`, so the registration would simply never
+land and the two toggles would not exist. After `STRIP_FALLBACK_MS` (2s — the strip
+is declared synchronously in `dsh-web-ui`'s own apply, so anything measurable
+already means it is absent) the launcher pins its own bar in `shell.overlay`
+instead, at the same offsets, with `inRow: false`. The strip appearing later
+disposes the pinned bar, and vice versa; the two homes are exclusive by
+construction.
+
+**One reservation crosses the boundary.** The sidebar is docked to the right edge
+and would cover the row — including the Git control that is not this plugin's. A
+peer cannot move someone else's row, so instead of shifting itself the launcher
+writes the width of the open sidebar into `--dsh-web-ui-bar-shift`, the property
+the row honors as *space reserved to its right*, and the whole strip steps clear.
+Alone (the fallback), the bar keeps its own inline offset and needs none of this.
 
 Both open flags, the sidebar width, the panel height, the tab list, and the
 working-directory override are persisted in `localStorage`, so a reload comes
@@ -211,15 +236,16 @@ surface off removes its routes rather than hiding its controls.
 | `src/host/relay.ts` | the URL relay: bounded fetch, framing headers lifted, `<base>` injected, HTML errors that render inside the frame |
 | `src/host/routes.ts` | every route, registered per surface, each handler wrapped so one throw cannot take the carrier down |
 | `src/shared/wire.ts` | the wire contract both halves share |
-| `src/client/index.tsx` | the browser entry: stylesheet, dictionaries, one `shell.overlay` registration |
+| `src/client/index.tsx` | the browser entry: stylesheet, dictionaries, and the two-path launcher registration (the shared row, or this plugin's own pinned bar) |
 | `src/client/Launcher.tsx` | the two controls, and the geometry both panels share |
 | `src/client/WebPanel.tsx` | the sidebar: tabs, address bar, direct/relay, probe notices |
 | `src/client/ShellPanel.tsx` | the bottom panel: input, output, run history, resize |
 | `src/client/styles.ts` | every style this plugin owns, over ui-theme's semantic tokens |
 
 It occupies no `single` seat, declares no child seats, and disables no shipped
-row — so it can be installed beside other UI plugins (including `dsh-web-ui`,
-whose action bar sits one row above this launcher) without taking anything away.
+row — so it can be installed beside other UI plugins without taking anything away.
+Beside `dsh-web-ui` it fills that plugin's `shell.action` seat (the controls above
+are then part of its action row); alone it keeps its own pinned bar.
 
 ## Verifying
 

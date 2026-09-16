@@ -1,12 +1,18 @@
 /**
  * What this plugin's browser half registers, and the types that go with it.
  *
- * The seat is `shell.overlay`: the frame's additive, root-scope, click-through
- * floating layer (declared by ui-layout inside AppFrame). Additive is the whole
- * reason it is the right seat — a fresh `id` sits BESIDE whatever else is there
- * (a git control, a status pill) instead of shadowing it, and a `single` seat
- * like `sidebar` or `details` would instead make this plugin the sole owner of a
- * region another plugin already renders into.
+ * The launcher's seat is `shell.action`: the one-row strip of controls that
+ * `dsh-web-ui` renders at the conversation header's right, above its hairline,
+ * and declares for exactly this purpose. Two independently `position: fixed` bars
+ * cannot make one row — each would need the other's width to know where to start
+ * — so whoever renders the strip owns it and peer plugins put their controls in
+ * it.
+ *
+ * The FALLBACK seat is `shell.overlay`: the frame's additive, root-scope,
+ * click-through floating layer (declared by ui-layout inside AppFrame). Additive
+ * is why it is the right fallback — a fresh `id` sits BESIDE whatever else is
+ * there instead of shadowing it — and a deployment with no `dsh-web-ui` has no
+ * strip for the launcher to live in, so there it pins its own bar.
  *
  * The type-only import below pulls ui-layout's SlotMap merge, so
  * `PropsRuntime<'shell.overlay'>` resolves to the frame's global kit — the
@@ -29,14 +35,50 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 }
 
 /**
- * Composed props of the launcher: the frame's global session/workspace hooks and
- * this plugin's typed `t` seat.
+ * The action-row seat `dsh-web-ui` declares, restated here with the same shape.
  *
- * There is deliberately no injected business face. Both panels speak to the host
- * over their own routes and to the frame through these hooks, so the launcher
- * needs no service from `apply` — which keeps the registration's identity stable
- * across reloads.
+ * A slot key is a contract, not a symbol: the declaring plugin ships no type
+ * declarations (this composition's plugins share types through the framework
+ * packages, never through each other), so the registering side declares the share
+ * it consumes and interface merging makes the two one. Identical members are the
+ * price of a cross-plugin contract no package.json can express.
+ *
+ * A deployment without `dsh-web-ui` never declares this key, so the registration
+ * in index.tsx simply never lands — which is why the launcher keeps its own
+ * pinned bar as a bounded fallback.
+ */
+declare module '@deepseek-ai/dsh-client-ui-slots' {
+  interface SlotMap {
+    /** Peer controls sharing `dsh-web-ui`'s action row. */
+    'shell.action': { kind: 'list'; scope: 'root'; owner: ShellActionOwnerProps }
+  }
+}
+
+/**
+ * Owner share of one control in that row, as `dsh-web-ui` passes it: nothing. The
+ * row contributes order and spacing; the occupant owns its control's look, its
+ * open flags, and its panels.
+ */
+export interface ShellActionOwnerProps {
+  /** Marker field: the occupant owns its own content and behaviour. */
+  children?: never
+}
+
+/**
+ * Composed props of the launcher: the frame's global session/workspace hooks,
+ * this plugin's injected placement fact, and the typed `t` seat.
+ *
+ * The injected face carries only whether the launcher renders INSIDE the shared
+ * strip or as its own pinned bar. That difference is geometry the component
+ * cannot read off the slot it occupies — both seats are root-scope list seats
+ * with an empty owner share, so they are indistinguishable from props alone.
+ *
+ * There is deliberately no other injected business face. Both panels speak to the
+ * host over their own routes and to the frame through these hooks, so the
+ * launcher needs no service from `apply` — which keeps its registration identity
+ * stable across reloads.
  */
 export type LauncherProps =
   & PropsRuntime<'shell.overlay'>
   & PropsLocale<typeof NS>
+  & { readonly inRow: boolean }

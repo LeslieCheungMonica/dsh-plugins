@@ -54,6 +54,18 @@ body[data-ds-dark-theme] [data-ms] {
   transition: right 180ms ease-out;
 }
 
+/* In the shared strip this plugin owns no geometry at all: the row that hosts it
+   decides where the group sits, and every offset above is the PINNED bar's. What
+   is left is the flex row of two buttons, which is what the strip lays out. The
+   sidebar-reserve trick changes shape here too — instead of moving itself, the
+   launcher writes the strip's own shift property so the whole row steps aside
+   (see Launcher.tsx and BAR_SHIFT_PROPERTY). */
+[data-ms='bar'][data-inline='true'] {
+  position: static;
+  z-index: auto;
+  transition: none;
+}
+
 [data-ms='barButton'] {
   display: inline-flex;
   align-items: center;

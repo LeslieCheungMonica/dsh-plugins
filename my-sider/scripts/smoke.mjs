@@ -500,40 +500,84 @@ check('the bundle asks only for shared modules', typeof clientPlugin.apply === '
 
 /** Every locale dictionary the plugin registered. */
 const dictionaries = {}
-/** Every slot entry the plugin registered. */
-const entries = []
-/** The style tag the plugin injected. */
-const clientCtx = {
-  effect(fn) {
-    const dispose = fn()
-    return typeof dispose === 'function' ? dispose : () => {}
-  },
-  locale: {
-    register(namespace, dictionary) {
-      dictionaries[namespace] = dictionary
-      return () => {}
-    },
-  },
-  slots: {
-    inject(name, factory) {
-      const dispose = factory()
+
+/**
+ * A client context that models slot DECLARATIONS, which is the whole point here:
+ * the real registry runs `slots.inject`'s factory only once the key it names has
+ * been declared, and this plugin now chooses its home by exactly that signal.
+ *
+ * @param {Set<string>} declared - the slot keys this fake composition declares.
+ * @returns {{ctx: object, entries: Array<object>, waited: string[]}} the context,
+ * the entries it collected, and every key the plugin waited on.
+ */
+const makeClientCtx = (declared) => {
+  const entries = []
+  const waited = []
+  const ctx = {
+    effect(fn) {
+      const dispose = fn()
       return typeof dispose === 'function' ? dispose : () => {}
     },
-    register(options, component) {
-      entries.push({ options, component })
-      return () => {}
+    locale: {
+      register(namespace, dictionary) {
+        dictionaries[namespace] = dictionary
+        return () => {}
+      },
     },
-  },
+    slots: {
+      inject(name, factory) {
+        waited.push(name)
+        if (!declared.has(name)) return () => {}
+        const dispose = factory()
+        return typeof dispose === 'function' ? dispose : () => {}
+      },
+      register(options, component) {
+        entries.push({ options, component })
+        return () => {}
+      },
+    },
+  }
+  return { ctx, entries, waited }
 }
 
-clientPlugin.apply(clientCtx)
-check('the plugin registers one entry in shell.overlay',
-  entries.length === 1 && entries[0].options.name === 'shell.overlay', JSON.stringify(entries.map(entry => entry.options)))
+// ── 1. the home this deployment has: dsh-web-ui's shared action row ────────
+const strip = makeClientCtx(new Set(['shell.action']))
+clientPlugin.apply(strip.ctx)
+/** The entries the primary composition produced (the rest of this file drives them). */
+const entries = strip.entries
+check('the launcher registers one entry, in the shared action row',
+  entries.length === 1 && entries[0].options.name === 'shell.action', JSON.stringify(entries.map(entry => entry.options)))
+check('and it is told it is rendering inside that row',
+  entries[0].options.inject().inRow === true, JSON.stringify(entries[0].options.inject()))
+check('no pinned bar is registered beside the row',
+  !strip.waited.includes('shell.overlay'), strip.waited.join(' | '))
 check('the entry is a fresh id, so peers are not shadowed', entries[0].options.id === 'my-sider-panels', entries[0].options.id)
 check('both dictionaries are registered under one namespace',
   dictionaries['mysider'] !== undefined && Object.keys(dictionaries['mysider'].zh).length === Object.keys(dictionaries['mysider'].en).length)
 check('the stylesheet is injected and attributed to this plugin',
   window.document.querySelector('style[data-plugin="my-sider"]')?.dataset['pluginCss'] === 'my-sider/panels')
+
+// ── 1b. the fallback: a deployment with no shared row ──────────────────────
+// The pending timer is run on the spot rather than waited out: the code path is
+// the same one, and a two-second sleep in a smoke test buys nothing.
+const realSetTimeout = globalThis.setTimeout
+globalThis.setTimeout = (fn) => { fn(); return 0 }
+// `shell.overlay` IS declared here — ui-layout's AppFrame always declares it. What
+// is missing is `shell.action`, i.e. a deployment without `dsh-web-ui`.
+const alone = makeClientCtx(new Set(['shell.overlay']))
+try {
+  clientPlugin.apply(alone.ctx)
+} finally {
+  globalThis.setTimeout = realSetTimeout
+}
+check('with no shared row the launcher pins its own bar in the overlay layer',
+  alone.entries.length === 1 && alone.entries[0].options.name === 'shell.overlay',
+  JSON.stringify(alone.entries.map(entry => entry.options)))
+check('and it is told it is NOT in a row',
+  alone.entries[0].options.inject().inRow === false, JSON.stringify(alone.entries[0].options.inject()))
+check('the two homes never both hold the launcher',
+  alone.waited.includes('shell.action') && entries[0].options.name !== alone.entries[0].options.name,
+  alone.waited.join(' | '))
 
 /**
  * Build the translator the renderer would synthesize.

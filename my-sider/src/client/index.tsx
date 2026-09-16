@@ -5,12 +5,12 @@
  * launcher — a sidebar whose tabs each open a web address, and a bottom panel that
  * runs bash command lines in the current project.
  *
- * Why it can be built entirely out of one slot: both surfaces are this plugin's
- * OWN floating chrome, so neither needs a region of the frame. They register as
- * one entry in `shell.overlay` — the additive, root-scope, click-through list seat
- * inside AppFrame — and the panels themselves render through a portal onto
- * `document.body`, because a docked panel must not live inside a column whose grid
- * tracks animate.
+ * Why it can be built almost entirely out of slots: both surfaces are this
+ * plugin's OWN floating chrome, so neither needs a region of the frame. The
+ * panels render through a portal onto `document.body`, because a docked panel must
+ * not live inside a column whose grid tracks animate, and the two toggles that
+ * open them register as one entry — in `dsh-web-ui`'s shared action strip when it
+ * is there, and in this plugin's own pinned bar when it is not.
  *
  * That choice is also what makes this plugin safe to install beside others: it
  * occupies no `single` seat, declares no child seats, disables no shipped row, and
@@ -35,6 +35,15 @@ import { STYLES, STYLE_TAG_ID } from './styles.ts'
 export const inject = ['slots', 'locale']
 
 /**
+ * How long the shared action strip gets to appear before this plugin pins its own
+ * bar instead (ms). `dsh-web-ui` declares the strip synchronously in its own
+ * apply, so anything measurable here already means that plugin is absent — or
+ * still inside its own registration wait, which is why the grace period is
+ * generous rather than tight.
+ */
+const STRIP_FALLBACK_MS = 2000
+
+/**
  * Install the plugin: stylesheet, dictionary, and the launcher registration.
  * @param ctx - client root context.
  */
@@ -53,25 +62,83 @@ export function apply(ctx: ClientContext): void {
 
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'my-sider: dictionaries')
 
-  // The seat is declared by ui-layout's AppFrame, which may register after this
-  // plugin does; `inject` waits for the declaration instead of assuming it, and
-  // hands back the disposer this effect owns.
-  ctx.slots.inject('shell.overlay', () => {
-    try {
-      return ctx.slots.register({
-        name: 'shell.overlay',
-        // A fresh id: this entry is ADDED beside the seat's other occupants
-        // rather than shadowing them.
-        id: 'my-sider-panels',
-        order: 20,
-        label: 'my-sider',
-        locale: NS,
-        registrant: 'my-sider',
-      }, Launcher)
-    } catch (error) {
-      // The panels are chrome: without them the page is still a working page.
-      console.warn('my-sider: could not register the panel launcher', error)
-      return () => {}
+  // TWO registration paths, one launcher. The preferred home is the shared
+  // action strip `dsh-web-ui` renders at the conversation header's right and
+  // declares for exactly this (`shell.action`); the fallback is this plugin's own
+  // pinned bar in `shell.overlay`, for a deployment that installs this plugin
+  // WITHOUT `dsh-web-ui`.
+  //
+  // The fallback is bounded rather than permanent: `dsh-web-ui` declares its seats
+  // synchronously in its own apply, so the timer only ever fires when that plugin
+  // is absent — or while its own registration is still waiting on the overlay
+  // seat. Whichever path wins is the one the operator sees; the two are exclusive
+  // by construction, because the strip's copy is disposed the moment the fallback
+  // is armed and the fallback is disposed the moment the strip appears.
+  ctx.effect(() => {
+    let inStrip = false
+    let disposePinned: (() => void) | undefined
+
+    const pinOwnBar = (): void => {
+      if (inStrip || disposePinned !== undefined) return
+      disposePinned = ctx.slots.inject('shell.overlay', () => {
+        try {
+          return ctx.slots.register({
+            name: 'shell.overlay',
+            // A fresh id: this entry is ADDED beside the seat's other occupants
+            // rather than shadowing them.
+            id: 'my-sider-panels',
+            order: 20,
+            label: 'my-sider',
+            locale: NS,
+            inject: () => ({ inRow: false }),
+            registrant: 'my-sider',
+          }, Launcher)
+        } catch (error) {
+          // The panels are chrome: without them the page is still a working page.
+          console.warn('my-sider: could not register the panel launcher', error)
+          return () => {}
+        }
+      })
     }
-  })
+
+    const timer = globalThis.setTimeout(pinOwnBar, STRIP_FALLBACK_MS)
+
+    const disposeWait = ctx.slots.inject('shell.action', () => {
+      inStrip = true
+      globalThis.clearTimeout(timer)
+      disposePinned?.()
+      disposePinned = undefined
+
+      let dispose: (() => void) | undefined
+      try {
+        dispose = ctx.slots.register({
+          name: 'shell.action',
+          // Same id as the pinned entry: the two are never live at once, and one
+          // name for this plugin's launcher keeps diagnostics readable.
+          id: 'my-sider-panels',
+          order: 20,
+          label: 'my-sider',
+          locale: NS,
+          inject: () => ({ inRow: true }),
+          registrant: 'my-sider',
+        }, Launcher)
+      } catch (error) {
+        console.warn('my-sider: could not register the panel launcher in the action row', error)
+      }
+      return () => {
+        dispose?.()
+        // The strip is gone again (a plugin unload, a reload of `dsh-web-ui`):
+        // re-arming happens on a later task so the new effect is not created
+        // inside this one's teardown.
+        inStrip = false
+        globalThis.setTimeout(pinOwnBar, 0)
+      }
+    })
+
+    return () => {
+      globalThis.clearTimeout(timer)
+      disposePinned?.()
+      disposeWait()
+    }
+  }, 'my-sider: launcher')
 }
