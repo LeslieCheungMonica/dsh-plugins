@@ -5,7 +5,10 @@
  * shipped shell used to declare, so the shipped region occupants land here:
  * the workspace browser (`sidebar.workspaces`, including its own rail icons and
  * its directory flow), the settings shell (`sidebar.settings`), the brand seats,
- * and the additive footer actions. This component owns only what is genuinely
+ * and the additive footer actions. It declares two more of its own — the
+ * bottom-left account dock and the rows inside that dock's drawer — because the
+ * account controls live in this corner now instead of the frame's top-right
+ * corner (see AccountDock.tsx). This component owns only what is genuinely
  * its own — the column's geometry, its header, and the project row that sits
  * directly above the New Session button. The header's brand row is one of those
  * owned facts: the mark seat and the name seat are still rendered as slots, but
@@ -25,6 +28,7 @@ import {
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { WorkspaceId } from '@deepseek-ai/dsh-client-runtime/client'
 import { AsiaInfoMark } from './AsiaInfoMark.tsx'
+import { AccountDock } from './AccountDock.tsx'
 import type { ShellProps } from './contract.ts'
 import { BrowseFoldersDialog } from './BrowseFoldersDialog.tsx'
 import { ConfirmDialog } from './ConfirmDialog.tsx'
@@ -90,7 +94,7 @@ export function Shell(props: ShellProps): ReactNode {
     collapsed, width, renderSlot, t,
     useSessions, useWorkspaces, useStore, actions,
     startSession, toggleSidebar, listDirectory, createDirectory,
-    selectProject, renameWorkspace, deleteWorkspace,
+    selectProject, renameWorkspace, deleteWorkspace, listPlugins,
   } = props
 
   // Wide content stays mounted while the collapse animates, unmounts at
@@ -245,9 +249,13 @@ export function Shell(props: ShellProps): ReactNode {
 
       {/* The FDE stage tag, directly above the New Session button it belongs
           to: the stage describes the project this column is scoped to, and the
-          button is what starts its next piece of work. */}
+          button is what starts its next piece of work. The project's PATH
+          travels with it because a gated transition is checked against the
+          project's Feishu folder, and the host resolves that folder from the
+          path (see StageTag.tsx). */}
       <StageTag
         scopeKey={currentId === undefined ? NO_PROJECT_SCOPE : String(currentId)}
+        scopePath={selected?.path}
         scopeLabel={selected?.title}
         rail={rail}
         t={t}
@@ -322,7 +330,18 @@ export function Shell(props: ShellProps): ReactNode {
 
       <div data-wui="foot">
         {renderSlot('sidebar.footer.action', { wide })}
-        {renderSlot('sidebar.settings', { wide })}
+        {/* The account dock owns the column's bottom-left corner, and the
+            Settings trigger it used to sit beside now renders INSIDE the dock's
+            drawer (see AccountDock.tsx). The seat is unchanged — only its
+            position in this tree moved. */}
+        <AccountDock
+          wide={wide}
+          expandSidebar={() => { if (collapsed) toggleSidebar() }}
+          renderSlot={renderSlot}
+          useSessions={useSessions}
+          listPlugins={listPlugins}
+          t={t}
+        />
       </div>
 
       {/* The New Project form. It sits ABOVE the folder browser in this tree

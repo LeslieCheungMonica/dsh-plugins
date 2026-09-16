@@ -356,8 +356,10 @@ const SHELL = `
    whatever surface the tag sits on (the column's fill, or the hover fill).
    The fill fractions are per-step rules below — an attribute, not an inline
    custom property, so the value is inspectable in the DOM like every other
-   state this plugin renders. One sixth is the FIRST stage, not zero: sitting on
-   stage one is one step of six, done. */
+   state this plugin renders. ONE STEP is the FIRST stage, not zero: sitting on
+   stage one is one step of the flow, done. These are per-step rules because the
+   flow's LENGTH is a fact this stylesheet has to know (see STAGE_COUNT in
+   stage.ts): adding a stage means adding a row here and re-fractioning the rest. */
 [data-wui='stageRing'] {
   flex: none;
   width: 16px;
@@ -371,12 +373,13 @@ const SHELL = `
   mask: radial-gradient(circle closest-side, transparent 72%, #000 76%);
 }
 
-[data-wui='stageTag'][data-step='0'] [data-wui='stageRing'] { --wui-stage-fill: 16.667%; }
-[data-wui='stageTag'][data-step='1'] [data-wui='stageRing'] { --wui-stage-fill: 33.333%; }
-[data-wui='stageTag'][data-step='2'] [data-wui='stageRing'] { --wui-stage-fill: 50%; }
-[data-wui='stageTag'][data-step='3'] [data-wui='stageRing'] { --wui-stage-fill: 66.667%; }
-[data-wui='stageTag'][data-step='4'] [data-wui='stageRing'] { --wui-stage-fill: 83.333%; }
-[data-wui='stageTag'][data-step='5'] [data-wui='stageRing'] { --wui-stage-fill: 100%; }
+[data-wui='stageTag'][data-step='0'] [data-wui='stageRing'] { --wui-stage-fill: 14.286%; }
+[data-wui='stageTag'][data-step='1'] [data-wui='stageRing'] { --wui-stage-fill: 28.571%; }
+[data-wui='stageTag'][data-step='2'] [data-wui='stageRing'] { --wui-stage-fill: 42.857%; }
+[data-wui='stageTag'][data-step='3'] [data-wui='stageRing'] { --wui-stage-fill: 57.143%; }
+[data-wui='stageTag'][data-step='4'] [data-wui='stageRing'] { --wui-stage-fill: 71.429%; }
+[data-wui='stageTag'][data-step='5'] [data-wui='stageRing'] { --wui-stage-fill: 85.714%; }
+[data-wui='stageTag'][data-step='6'] [data-wui='stageRing'] { --wui-stage-fill: 100%; }
 
 [data-wui='stageTagLabel'] {
   flex: 1;
@@ -609,6 +612,16 @@ const SHELL = `
   border: 1.5px solid var(--dsw-alias-border-l2);
 }
 
+/* The flow's END, while it is still ahead: a second hairline ring around the
+   hollow marker, so 完成 reads as the destination the line runs to rather than as
+   one more step. It is scoped to the UNREACHED case because the reached one is
+   already a filled disc with a check — and because the running node's halo is a
+   box-shadow too, which the pulse animation owns. */
+[data-wui='stageRow'][data-final='true'][data-state='pending'] [data-wui='stageNode'] {
+  border-color: var(--dsw-alias-border-l3);
+  box-shadow: 0 0 0 2px var(--dsw-alias-border-l1);
+}
+
 /* Running: the node breathes. The halo starts at the node's own edge and fades
    out at 7px, which is what makes "this one is live" readable at a glance
    without motion you have to wait for. */
@@ -650,6 +663,401 @@ const SHELL = `
 [data-wui='stageRow'][data-state='current'] [data-wui='stageStatus'] {
   color: var(--dsw-alias-state-success-primary);
   font-weight: 600;
+}
+
+/* ── FDE stage gate ───────────────────────────────────────────────────────
+   Two things live here: the LOCKED rows (every node that is neither the current
+   stage nor the next one — see isStageLocked in stage.ts) and the GATE DIALOG a
+   gated click opens. The lock is positional and the dialog is a modal, so
+   neither is a fourth node state and the flow's colour rules above stay
+   untouched. */
+
+/* A locked row keeps its own words and colour — what is missing is the MOVE, not
+   the stage — so the only change is the cursor and a hover that never promises a
+   click. (The user agent's own disabled dimming is overridden below, because a
+   greyed-out stage would read as "broken" rather than "not yet".) */
+[data-wui='stageNodeButton'][data-locked='true'] {
+  cursor: default;
+}
+
+[data-wui='stageNodeButton'][data-locked='true']:disabled {
+  color: inherit;
+}
+
+[data-wui='stageRow']:has([data-wui='stageNodeButton'][data-locked='true']):hover {
+  background: transparent;
+}
+
+/* The gate dialog: a page-level modal, portaled to the body for the same reason
+   the flow panel is portaled (the column clips its own overflow). Its own markup
+   rather than the shared Modal, because the checklist has structure the shared
+   card does not carry — and because this plugin's stylesheet is what the preview
+   measurement can see. */
+[data-wui='gateOverlay'] {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  box-sizing: border-box;
+  background: var(--dsw-alias-bg-mask-1);
+  backdrop-filter: var(--dsw-mask-blur);
+}
+
+[data-wui='gateDialog'] {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 420px;
+  max-width: 100%;
+  max-height: 100%;
+  overflow-y: auto;
+  padding: 14px 16px 12px;
+  box-sizing: border-box;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 14px;
+  background: var(--dsw-specific-menu);
+  box-shadow: var(--dsw-shadow-lv3);
+  color: var(--dsw-alias-label-primary);
+  font-size: 13px;
+  --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);
+  --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);
+  animation: wui-gate-in 140ms var(--ds-ease-in-out);
+}
+
+@keyframes wui-gate-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.99);
+  }
+}
+
+[data-wui='gateHead'] {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+[data-wui='gateHeading'] {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+[data-wui='gateTitle'] {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+[data-wui='gateTarget'] {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+}
+
+[data-wui='gateClose'] {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  cursor: pointer;
+}
+
+[data-wui='gateClose']:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+
+[data-wui='gateNote'] {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+  color: var(--dsw-alias-label-secondary);
+  line-height: 1.5;
+}
+
+[data-wui='gateNote'][data-tone='warn'] {
+  color: var(--dsw-alias-state-warn-label);
+}
+
+[data-wui='gateNoteIcon'] {
+  flex: none;
+  display: inline-flex;
+  margin-top: 1px;
+}
+
+[data-wui='gateItems'] {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+[data-wui='gateItem'] {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 3px 0;
+}
+
+/* The mark is the whole verdict at a glance: a met item carries the flow's own
+   success colour, an unmet one the warning that stopped the move. */
+[data-wui='gateItemMark'] {
+  flex: none;
+  display: inline-flex;
+  margin-top: 1px;
+  color: var(--dsw-alias-state-success-primary);
+}
+
+[data-wui='gateItem'][data-met='false'] [data-wui='gateItemMark'],
+[data-wui='gateManual'][data-met='false'] [data-wui='gateItemMark'] {
+  color: var(--dsw-alias-state-warn-primary);
+}
+
+[data-wui='gateItemBody'] {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+[data-wui='gateItemHeading'] {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+[data-wui='gateItemLabel'] {
+  color: var(--dsw-alias-label-primary);
+}
+
+/* Where a line was answered: a drive and this machine are different places to go
+   and look, so the checklist says which one each row is about. */
+[data-wui='gateItemBadge'] {
+  flex: none;
+  padding: 0 5px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 999px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 10px;
+  line-height: 15px;
+}
+
+/* A workspace artifact's proof: a file on this host, which a page cannot open, so
+   it is stated with its size rather than offered as a link that would do nothing. */
+[data-wui='gateItemProof'] {
+  align-self: flex-start;
+  max-width: 100%;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+[data-wui='gateItemNote'] {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+}
+
+/* The evidence is a BUTTON rather than an anchor: it opens a Feishu tab with
+   window.open, like the folder panel's rows, so it must not look like a link the
+   page cannot honour. */
+[data-wui='gateEvidence'] {
+  align-self: flex-start;
+  max-width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--dsw-alias-label-primary-bluish);
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+[data-wui='gateEvidence']:hover {
+  text-decoration: underline;
+}
+
+/* The manual item: the one part of the checklist a folder cannot answer, so it is
+   set apart from the read items by its own panel and by the accent the answer
+   carries once it is given. */
+[data-wui='gateManual'] {
+  margin-top: 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-left: 3px solid var(--dsw-alias-state-warn-primary);
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-base);
+}
+
+[data-wui='gateManual'][data-met='true'] {
+  border-left-color: var(--dsw-alias-state-success-primary);
+}
+
+[data-wui='gateManualHead'] {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+[data-wui='gateManualHead'] [data-wui='gateItemNote'] {
+  margin-left: auto;
+}
+
+[data-wui='gateManualQuestion'] {
+  margin: 6px 0 0;
+  color: var(--dsw-alias-label-secondary);
+}
+
+/* The answers are chips the whole of which is the hit target (the label wraps the
+   input), so the radio dot and the word are one control — the same pattern the
+   New Project form's three answers use. */
+[data-wui='gateChoices'] {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 7px;
+}
+
+[data-wui='gateChoice'] {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 10px 6px 8px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: border-color 120ms ease, background-color 120ms ease, color 120ms ease;
+}
+
+[data-wui='gateChoice']:hover {
+  border-color: var(--dsw-alias-border-l3);
+  color: var(--dsw-alias-label-primary);
+}
+
+[data-wui='gateChoice'][data-checked='true'] {
+  border-color: var(--dsh-web-ui-accent);
+  background: var(--dsh-web-ui-accent-soft);
+  color: var(--dsh-web-ui-accent);
+}
+
+[data-wui='gateChoice'] input {
+  margin: 0;
+  accent-color: var(--dsh-web-ui-accent);
+}
+
+[data-wui='gateChoice']:has(input:focus-visible) {
+  outline: 2px solid var(--dsh-web-ui-accent);
+  outline-offset: 1px;
+}
+
+[data-wui='gateManualRecord'] {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+[data-wui='gateWithdraw'] {
+  flex: none;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--dsw-alias-label-tertiary);
+  font: inherit;
+  font-size: 11px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+[data-wui='gateWithdraw']:hover:not(:disabled) {
+  color: var(--dsw-alias-state-warn-label);
+}
+
+[data-wui='gateActions'] {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px solid var(--dsw-alias-border-l2);
+}
+
+/* Pushes the two exits to the right edge, so the actions read as
+   "utilities … cancel / enter". */
+[data-wui='gateSpacer'] {
+  flex: 1;
+}
+
+[data-wui='gateFolder'],
+[data-wui='gateRetry'],
+[data-wui='gateCancel'] {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+[data-wui='gateFolder']:hover,
+[data-wui='gateRetry']:hover:not(:disabled),
+[data-wui='gateCancel']:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+/* The one filled control in the dialog, and it is disabled until the checklist is
+   satisfied: a gate with a "continue anyway" button is not a gate. */
+[data-wui='gateEnter'] {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 14px;
+  border: none;
+  border-radius: 6px;
+  background: var(--dsh-web-ui-accent);
+  color: var(--dsh-web-ui-accent-label);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 120ms var(--ds-ease-in-out);
+}
+
+[data-wui='gateEnter']:hover:not(:disabled) {
+  background: var(--dsh-web-ui-accent-hover);
+}
+
+[data-wui='gateFolder']:disabled,
+[data-wui='gateRetry']:disabled,
+[data-wui='gateCancel']:disabled,
+[data-wui='gateEnter']:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 /* ── new session ─────────────────────────────────────────────────────── */
@@ -836,6 +1244,629 @@ const SHELL = `
 
 [data-wui='column'][data-rail='true'] [data-wui='foot'] {
   border-top-color: transparent;
+}
+
+/* ── account dock: the bottom-left row and its upward drawer ──────────────
+   The account used to be a capsule in the frame's TOP-RIGHT corner. It lives
+   here now, because the column's foot is where a once-a-day control belongs and
+   the top-right corner is the frame's own. The drawer is a sibling of the row,
+   not a portal: it opens upward INSIDE the column, so the column's own clipping
+   is what keeps it there, and the rail (56px, no width for it) reaches the same
+   rows by expanding instead — see AccountDock.tsx. */
+
+[data-wui='account'] {
+  position: relative;
+  flex: none;
+}
+
+[data-wui='accountDrawer'] {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 6px);
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  box-sizing: border-box;
+  padding: 6px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 12px;
+  background: var(--dsw-specific-menu);
+  box-shadow: var(--dsw-shadow-lv3);
+  /* A short viewport must SCROLL the drawer, never clip it: the column clips its
+     own overflow, so a drawer taller than the space above it would lose its top
+     rows — and the two rows a reader comes here for are the bottom two. */
+  max-height: calc(100vh - 96px);
+  overflow-y: auto;
+  /* Elevated surface: it takes the l2 elevation scrollbar tokens, like every
+     other card in this composition. */
+  --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);
+  --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);
+
+  /* CLOSED is hidden, not unmounted (see AccountDock.tsx for why: the shipped
+     Settings shell lives in here, and that shell is also what renders the
+     body-portaled onboarding surface). visibility is doing the accessibility and
+     hit-testing work — it takes the whole subtree out of the accessibility tree
+     and out of the tab order, which opacity: 0 alone would not — and it is
+     transitioned with a DELAY on the way out so the fade is visible, and with no
+     delay on the way in. */
+  visibility: hidden;
+  opacity: 0;
+  transform: translateY(6px);
+  pointer-events: none;
+  transition:
+    opacity 120ms var(--ds-ease-in-out),
+    transform 120ms var(--ds-ease-in-out),
+    visibility 0s linear 120ms;
+}
+
+/* It opens upward, so it arrives from just below. */
+[data-wui='accountDrawer'][data-open='true'] {
+  visibility: visible;
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+  transition:
+    opacity 140ms var(--ds-ease-in-out),
+    transform 140ms var(--ds-ease-in-out),
+    visibility 0s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-wui='accountDrawer'],
+  [data-wui='accountDrawer'][data-open='true'] { transition: none; }
+}
+
+/* One row of the drawer. The shipped Settings trigger is made to match this
+   rhythm by the rule further down — the two must read as one list.
+
+   flex: none is load-bearing rather than tidiness. The drawer is a column flex
+   container with a max-height, so every child would otherwise SHRINK to fit
+   before the drawer ever scrolled — and a row cannot fall back on the automatic
+   minimum size, because the overflow: hidden above (which is what truncates a
+   long name) sets that minimum to zero. Measured without it: a 36px row becomes
+   8px at a 400px-tall viewport and 0px at 320px. */
+[data-wui='drawerRow'] {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 36px;
+  padding: 0 8px;
+  box-sizing: border-box;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+[data-wui='drawerRow']:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+[data-wui='drawerRowIcon'] {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  color: var(--dsw-alias-label-secondary);
+}
+
+[data-wui='drawerRowLabel'] {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+[data-wui='drawerRowChevron'],
+[data-wui='accountChevron'] {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+/* The chevron points UP while the surface below is closed (that is the way it
+   will open) and flips once it is open. One glyph, two states, so the two
+   chevrons in this corner cannot drift apart. */
+[data-wui='drawerRowChevron'] svg,
+[data-wui='accountChevron'] svg {
+  transition: transform 140ms var(--ds-ease-in-out);
+}
+
+[data-wui='drawerRowChevron'][data-open='true'] svg,
+[data-wui='accountChevron'][data-open='true'] svg {
+  transform: rotate(180deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-wui='drawerRowChevron'] svg,
+  [data-wui='accountChevron'] svg { transition: none; }
+}
+
+[data-wui='drawerDivider'] {
+  flex: none;
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--dsw-alias-border-l1);
+}
+
+[data-wui='drawerBody'] {
+  /* Same reason as the rows: content that shrinks is content that gets clipped
+     instead of scrolled. */
+  flex: none;
+  padding: 2px 8px 6px;
+}
+
+/* The shipped Settings trigger (ui-settings-general's SettingsRoot), rendered
+   INSIDE the drawer instead of the column's foot. Its own stylesheet sizes it
+   as a 42px foot row with negative margins; this re-sizes it into the drawer's
+   36px row rhythm. Two attribute selectors and an element beat its own
+   .trigger (one class) and that rule's :hover, whatever order the two
+   stylesheets landed in — which matters, because this sheet is injected by
+   apply() and the shipped one by the shell.
+ *
+ * The CHILD combinator is load-bearing, not tidiness. SettingsRoot renders the
+ * trigger AND the settings PANEL as siblings inside one slot wrapper, so without
+ * it this rule also reaches every button inside the modal that panel draws —
+ * measured: the Plugins page's 52px cards came out with the drawer row's 8px
+ * padding and 10px gap. The direct-child combinator is the trigger and nothing
+ * else.
+ *
+ * It is anchored on the SEAT, not on an attribute of the trigger: the seat key is
+ * something THIS plugin declares and renders, so it cannot drift, whereas
+ * aria-haspopup="dialog" is also the honest marking for this plugin's own Plugins
+ * row — which opens a modal too, and must keep the drawer's ordinary rhythm. */
+[data-wui='accountDrawer'] [data-slot='sidebar.settings'] > button {
+  width: 100%;
+  height: 36px;
+  margin: 0;
+  padding: 0 8px;
+  gap: 10px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+[data-wui='accountRow'] {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 42px;
+  margin: 4px -2px;
+  padding: 0 10px 0 8px;
+  box-sizing: border-box;
+  border: none;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 14px;
+  line-height: 22px;
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+[data-wui='accountRow']:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+/* The identity content the occupant renders fills what the chevron leaves, and
+   truncates rather than pushing the chevron out of the row. */
+[data-wui='accountIdentity'] {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+}
+
+[data-wui='accountFallback'] {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--dsw-alias-label-secondary);
+}
+
+[data-wui='accountFallbackName'] {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* The rail row: the avatar alone, in the same 36x36 circle box as every other
+   rail control. */
+[data-wui='column'][data-rail='true'] [data-wui='accountRow'] {
+  width: 36px;
+  height: 36px;
+  margin: 8px 0 10px;
+  padding: 0;
+  justify-content: center;
+  gap: 0;
+  border-radius: 50%;
+}
+
+/* ── usage block (inside the account drawer) ─────────────────────────── */
+
+[data-wui='usage'] {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+[data-wui='usageNote'] {
+  margin: 2px 0 4px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+[data-wui='usageContext'] {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+[data-wui='usageContextHead'] {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+[data-wui='usageContextFigures'] {
+  color: var(--dsw-alias-label-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+[data-wui='usageBar'] {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--dsw-alias-border-l1);
+  overflow: hidden;
+}
+
+[data-wui='usageBarFill'] {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--dsh-web-ui-accent);
+  transition: width 200ms var(--ds-ease-in-out);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-wui='usageBarFill'] { transition: none; }
+}
+
+[data-wui='usageBarLabel'] {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--dsw-alias-label-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+[data-wui='usageGrid'] {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
+  gap: 6px;
+}
+
+[data-wui='usageFigure'] {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+[data-wui='usageFigureLabel'] {
+  font-size: 11px;
+  line-height: 14px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+[data-wui='usageFigureValue'] {
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+[data-wui='usageFoot'] {
+  /* The scope sentence is the one line a reader must be able to check the
+     figures against, so it stays legible rather than fading into the surface. */
+  margin: 0;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+  line-height: 15px;
+}
+
+/* ── plugins modal ──────────────────────────────────────────────────────
+   The Settings → Plugins page's presentation, reproduced for the account
+   drawer's own modal: a search row, a "插件列表" heading with its count, and a
+   two-column card grid whose cards disclose their Loader entry and Cordis state
+   in place. The geometry, the tokens AND the phase colours are that page's own,
+   because a plugin must read the same in both places.
+
+   The card is reached from the CONTENT rather than from the modal's own class:
+   that class is a hashed CSS-module name this plugin does not own, so the :has()
+   selector asks the structural question instead (the modal containing this
+   tree), and an upstream class rename cannot silently un-widen the dialog. */
+.dsh-web-ui-plugins:has([data-wui='pluginsDialog']) {
+  width: min(720px, 100%);
+}
+
+[data-wui='pluginsDialog'] {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: 100%;
+  min-width: 0;
+  color: var(--dsw-alias-label-primary);
+}
+
+/* The catalogue scrolls inside a bounded region, so the modal's header and its
+   search row stay put — the same split the settings panel makes between its
+   fixed chrome and its scrolling options area. */
+[data-wui='pluginSearch'],
+[data-wui='pluginCatalogHeading'] {
+  flex: none;
+}
+
+[data-wui='pluginSearchField'] {
+  display: block;
+  width: 100%;
+}
+
+[data-wui='pluginCatalogHeading'] {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  margin-top: 2px;
+  padding: 0 2px;
+}
+
+[data-wui='pluginCatalogHeading'] h3 {
+  margin: 0;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 600;
+}
+
+[data-wui='pluginCatalogHeading'] span {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+[data-wui='pluginNote'] {
+  margin: 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+[data-wui='pluginFailure'] {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dsw-alias-state-error-primary);
+}
+
+[data-wui='pluginFailure'] p {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+[data-wui='pluginFailure'] button {
+  flex: none;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 6px;
+  padding: 4px 10px;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  cursor: pointer;
+}
+
+[data-wui='pluginFailure'] button:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+[data-wui='pluginCards'] {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 10px;
+  /* The list is ~180 entries in this deployment: it scrolls in its own region
+     rather than growing the modal past the viewport. */
+  max-height: min(440px, calc(100vh - 320px));
+  overflow-y: auto;
+  margin: 0;
+  padding: 2px;
+  list-style: none;
+  --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);
+  --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);
+}
+
+/* One column when the modal is narrow (a small viewport caps the card), so a
+   title never has to share 150px with a phase dot and two tags. */
+@media (max-width: 620px) {
+  [data-wui='pluginCards'] { grid-template-columns: minmax(0, 1fr); }
+}
+
+[data-wui='pluginCard'] {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 10px;
+  background: var(--dsw-alias-bg-layer-3);
+}
+
+[data-wui='pluginCard'][data-open='true'] {
+  border-color: var(--dsw-alias-border-l1);
+  box-shadow: var(--dsw-shadow-lv1);
+}
+
+[data-wui='pluginCardBody'] {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  min-height: 52px;
+  border: 0;
+  padding: 12px 14px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+[data-wui='pluginCardBody']:hover,
+[data-wui='pluginCard'][data-open='true'] > [data-wui='pluginCardBody'] {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+[data-wui='pluginCardBody']:focus-visible {
+  outline: 2px solid var(--dsw-alias-state-business-primary);
+  outline-offset: -2px;
+}
+
+[data-wui='pluginCardTitle'] {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-wui='pluginCardTrailing'] {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 7px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+[data-wui='pluginDot'] {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--dsw-alias-label-tertiary);
+}
+
+[data-wui='pluginDot'][data-phase='active'] {
+  background: var(--dsw-alias-state-success-primary);
+}
+
+[data-wui='pluginDot'][data-phase='failed'] {
+  background: var(--dsw-alias-state-error-primary);
+}
+
+[data-wui='pluginDot'][data-phase='loading'] {
+  background: var(--dsw-alias-state-business-primary);
+}
+
+[data-wui='pluginTag'] {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+/* Enabled is the ordinary state and reads as a quiet success chip; disabled is
+   the exception the reader is looking for, so it is the one that keeps the
+   neutral chip. */
+[data-wui='pluginTag'][data-enabled='true'] {
+  background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 10%, transparent);
+  color: var(--dsw-alias-state-success-primary);
+}
+
+[data-wui='pluginChevron'] {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  color: var(--dsw-alias-label-tertiary);
+  transition: transform 140ms var(--ds-ease-in-out);
+}
+
+[data-wui='pluginCard'][data-open='true'] [data-wui='pluginChevron'] {
+  transform: rotate(180deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-wui='pluginChevron'] { transition: none; }
+}
+
+[data-wui='pluginCardDetails'] {
+  border-top: 1px solid var(--dsw-alias-border-l2);
+  padding: 10px 14px 12px;
+  background: var(--dsw-alias-bg-module-platform);
+}
+
+[data-wui='pluginEntryId'] {
+  display: block;
+  overflow-wrap: anywhere;
+  color: var(--dsw-alias-label-primary);
+  font-family: var(--ds-font-family-code);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+[data-wui='pluginFacts'] {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  gap: 6px 10px;
+  margin: 8px 0 0;
+}
+
+[data-wui='pluginFacts'] > div {
+  display: contents;
+}
+
+[data-wui='pluginFacts'] dt {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+  line-height: 17px;
+}
+
+[data-wui='pluginFacts'] dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 17px;
 }
 
 /* ── project-scoped session list ─────────────────────────────────────── */
@@ -1575,28 +2606,44 @@ const SHELL = `
   color: var(--dsw-alias-label-dimmed);
 }
 
-/* ── action bar ──────────────────────────────────────────────────────── */
+/* ── action row ──────────────────────────────────────────────────────── */
 
-/* One always-on group, pinned under the deploy's account chip.
+/* One always-on strip of controls, at the conversation header's right and ABOVE
+   its hairline.
 
-   The login gate parks that chip at 12px/14px with a 32px capsule (20px avatar
-   plus 5px of padding either side and a 1px border), so its lower edge is at
-   44px and this bar starts at 52px — 8px of air. It is inset a little further
-   from the right edge than the chip is (24px against the chip's 14px) so the
-   controls do not read as part of the chip itself. Both offsets are custom
-   properties, so a deployment whose chip differs can move the bar without
-   touching the rules below. */
+   The line the reader pointed at is ui-conversation's own: the header paints a
+   1px ::after at bottom: 1px, which lands at y=74 at this frame's header
+   height (12px top padding + a 32px title row + a 27px tab row). The row is 26px
+   tall at top 40px, so its bottom is 66px — all of it above the line, where
+   before the Git control straddled it (52…78) and the panel toggles sat under it
+   (88…114).
+
+   All three offsets are custom properties, so a deployment can move or clear the
+   row without touching these rules:
+     --dsh-web-ui-bar-top     the row's top edge (default 40px)
+     --dsh-web-ui-bar-right   its inset from the viewport's right edge (24px)
+     --dsh-web-ui-bar-shift   space RESERVED to its right, added to the inset.
+                              A docked panel that covers the corner (my-sider's
+                              sidebar) writes this while it is open, so the whole
+                              row steps clear rather than being buried — the row
+                              is one unit, so Git moves with the toggles that
+                              pushed it aside. */
 [data-wui='actionBar'] {
   position: fixed;
-  top: var(--dsh-web-ui-bar-top, 52px);
-  right: var(--dsh-web-ui-bar-right, 24px);
+  top: var(--dsh-web-ui-bar-top, 40px);
+  right: calc(var(--dsh-web-ui-bar-right, 24px) + var(--dsh-web-ui-bar-shift, 0px));
   z-index: 1;
   display: flex;
   align-items: center;
   gap: 6px;
   /* The overlay layer as a whole is click-through, so a floating group must
-     claim its own hits. */
+     claim its own hits — and so must the peer controls it hosts. */
   pointer-events: auto;
+  transition: right 180ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-wui='actionBar'] { transition: none; }
 }
 
 [data-wui='actionButton'] {

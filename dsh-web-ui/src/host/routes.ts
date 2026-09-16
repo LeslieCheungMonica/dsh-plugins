@@ -35,6 +35,14 @@
  * `./products.ts`). The catalogue is its own route because the CREATE form needs
  * it before any path exists.
  *
+ * This entry point also registers the FDE stage gate's route
+ * (`GET /dsh-web-ui/stage-gate/check`, `./stage-gate.ts`), because a gate reads
+ * the SAME project's folder and must reuse this module's `lark-cli` adapter —
+ * its serialize queue is what keeps two concurrent token refreshes from racing
+ * on one credential file. The two families share one folder resolver
+ * (`./folder.ts`) for the same reason: adoption writes to the project's record,
+ * so the panel and the gate must never adopt different folders for one project.
+ *
  * The browser half only ever calls these paths; it never sees the CLI, a token,
  * or a credential. Feishu failures are answered as `{ ok: false, error }` with
  * HTTP 200 because they are *content* the panel renders ("the login expired",
@@ -51,8 +59,10 @@ import {
   createLarkCli, DRIVE_TOKEN_PATTERN, feishuUrl, folderNameFromPath,
   type LarkFolder, type LarkOutcome,
 } from './lark.ts'
+import { createFolderResolver } from './folder.ts'
 import { asBackground, createProjectStore } from './projects.ts'
 import { readProductCards } from './products.ts'
+import { registerStageGateRoutes } from './stage-gate.ts'
 
 /** Path prefix of every route this module registers. */
 export const LARK_ROUTE_PREFIX = '/dsh-web-ui/lark'
@@ -244,6 +254,16 @@ export function registerLarkRoutes(ctx: Context): void {
       warn: (format, ...params) => { log.warn(format as string, ...params) },
     },
   })
+  // One resolver for both surfaces that ask which folder a project owns: this
+  // module's `/folder` route and the FDE stage gate (`./stage-gate.ts`). See
+  // `./folder.ts` for the policy and why it must be a single one.
+  const folders = createFolderResolver({
+    cli,
+    projects,
+    parentToken: PROJECT_FOLDER_TOKEN,
+    maxCandidates: MAX_CANDIDATES,
+    log: (message) => { log.info(message) },
+  })
 
   /**
    * Wrap a handler so one throwing route cannot take the carrier down.
@@ -294,66 +314,26 @@ export function registerLarkRoutes(ctx: Context): void {
   /**
    * Resolve which archive folder belongs to one project.
    *
-   * The RECORD is the authority when it has one: that token is the folder this
-   * project's creation actually produced, so it is not re-derived, not compared
-   * by name, and not affected by a later rename in Feishu.
-   *
-   * With no token recorded — a project created before this plugin recorded one,
-   * or a create that failed — the archive is read once and searched for folders
-   * whose name IS the project's name. Exactly one match is ADOPTED: it is
-   * written to the record, so the lookup happens once per project rather than on
-   * every panel open, and the project shows the folder it created instead of a
-   * fresh duplicate. Zero matches and several matches are both reported as
-   * content (`missing` / `ambiguous`) rather than guessed at: this deployment
-   * cannot tell "the folder is gone" from "the operator renamed it", and between
-   * two same-named folders it has no basis to prefer one.
-   *
-   * The read needs `space:document:retrieve` on the `lark-cli` login, which is
-   * the same scope the listing needs — so a login that can show a folder's
-   * contents can also adopt one, and a login that cannot yet do either reports
-   * the scope to ask for.
-   *
-   * @param input - the project's path, the name to search for, and whether to drop caches first.
-   * @returns the wire body to send.
+   * The POLICY lives in `./folder.ts`, shared with the FDE stage gate: both
+   * surfaces ask the same question, adoption WRITES to the project's record, and
+   * two policies would let the panel and the gate disagree about which folder a
+   * project owns. This route is only the wire half of it.
    */
   const resolveFolder = async (input: { path: string; name: string; refresh: boolean }): Promise<Record<string, unknown>> => {
-    const { path, name } = input
-    if (input.refresh) cli.invalidate()
-    const record = await projects.get(path)
-    const recorded = record?.larkFolderToken ?? ''
-    if (recorded !== '') {
-      return {
-        ok: true,
-        source: 'record',
-        name,
-        folder: folderJson({
-          name: record?.name ?? name,
-          folderToken: recorded,
-          url: (record?.larkFolderUrl ?? '') === '' ? feishuUrl('folder', recorded) : (record?.larkFolderUrl ?? ''),
-        }),
-        candidates: [],
-      }
+    const resolved = await folders.resolve(input)
+    if (!resolved.ok) {
+      return { ok: false, error: { code: resolved.code, message: resolved.message } }
     }
-
-    const listed = await cli.children({ folderToken: PROJECT_FOLDER_TOKEN })
-    if (!listed.ok) return { ok: false, error: { code: listed.code, message: listed.message } }
-    const candidates = listed.value
-      .filter(entry => entry.expandToken !== '' && entry.name === name)
-      .map((entry): LarkFolder => ({ name: entry.name, folderToken: entry.expandToken, url: entry.url }))
-
-    if (candidates.length === 1) {
-      const found = candidates[0] as LarkFolder
-      const stored = await projects.setLarkFolder({ path, name, folderToken: found.folderToken, url: found.url })
-      log.info(`adopted the existing Feishu folder \`${found.name}\` for ${stored.path}`)
-      return { ok: true, source: 'adopted', name, folder: folderJson(found), candidates: [] }
-    }
-
+    const value = resolved.value
     return {
       ok: true,
-      source: candidates.length === 0 ? 'missing' : 'ambiguous',
-      name,
-      folder: null,
-      candidates: candidates.slice(0, MAX_CANDIDATES).map(folderJson),
+      source: value.source,
+      name: value.name,
+      // `null` rather than an absent field: the panel distinguishes "no folder
+      // resolved" from "the host said nothing", and only the first is a state it
+      // offers to fix.
+      folder: value.folder === undefined ? null : folderJson(value.folder),
+      candidates: value.candidates.map(folderJson),
     }
   }
 
@@ -624,4 +604,11 @@ export function registerLarkRoutes(ctx: Context): void {
       : { ok: false, error: { code: 'cards-unreadable', message: cards.message } })
   }, 'cards')
 
-  log.info(`Feishu routes registered at ${LARK_ROUTE_PREFIX} (project folder ${PROJECT_FOLDER_TOKEN})`)}
+  log.info(`Feishu routes registered at ${LARK_ROUTE_PREFIX} (project folder ${PROJECT_FOLDER_TOKEN})`)
+
+  // The FDE stage gate is the second surface over this same Feishu folder, and
+  // it is registered from HERE rather than from its own entry point: it must
+  // reuse this module's adapter, because the adapter's serialize queue is what
+  // keeps two concurrent token refreshes from racing on one credential file.
+  registerStageGateRoutes(ctx, { cli, projects, folders })
+}

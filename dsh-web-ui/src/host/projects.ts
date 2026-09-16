@@ -64,8 +64,30 @@ export interface ProjectRecord {
   readonly larkFolderToken: string
   /** The folder's Feishu URL, recorded beside its token so the panel can link it. */
   readonly larkFolderUrl: string
+  /**
+   * The answers to the stage gate's MANUAL items, keyed `<gate>:<item>`.
+   *
+   * A manual item is a judgement — *has this been agreed with the customer?* — so
+   * what is stored is not a flag but a citation: WHO answered and WHEN. It lives
+   * on the project because that is what the judgement is about, and it survives
+   * the harness restarting, which a page's own memory does not.
+   *
+   * An item answered "no" is ABSENT here rather than stored as `false`: for a gate,
+   * "nobody has confirmed this" and "somebody said it does not hold" are the same
+   * state, and a record that keeps only the affirmative can never be misread as
+   * standing permission.
+   */
+  readonly gateConfirmations: Record<string, GateConfirmationRecord>
   /** Epoch ms of the last write, for a tie-break and for support. */
   readonly updatedAt: number
+}
+
+/** One recorded manual answer. */
+export interface GateConfirmationRecord {
+  /** Who gave the answer, as the host resolved their Feishu identity. */
+  readonly by: string
+  /** Epoch ms of the answer. */
+  readonly at: number
 }
 
 /** The whole document, as it is stored. */
@@ -126,6 +148,29 @@ export function asBackground(value: unknown): ProductBackground {
 }
 
 /**
+ * Read the recorded manual answers out of one raw record.
+ *
+ * Defensive in the same way every other field here is: a document written by an
+ * older version has no such field (which is "nothing answered yet"), and an entry
+ * whose shape is not a `{ by, at }` pair is dropped rather than rendered as a
+ * citation nobody can read.
+ * @param raw - the raw field.
+ * @returns the answers by key, empty when nothing usable is there.
+ */
+function toConfirmations(raw: unknown): Record<string, GateConfirmationRecord> {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return {}
+  const answers: Record<string, GateConfirmationRecord> = {}
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value !== 'object' || value === null) continue
+    const entry = value as Record<string, unknown>
+    const at = entry['at']
+    if (typeof at !== 'number' || !Number.isFinite(at)) continue
+    answers[key] = { by: typeof entry['by'] === 'string' ? entry['by'] : '', at }
+  }
+  return answers
+}
+
+/**
  * Read one record out of the parsed document.
  * @param raw - the raw record.
  * @param path - the key it was stored under.
@@ -146,6 +191,7 @@ function toRecord(raw: unknown, path: string): ProjectRecord | undefined {
     // such a record, and `GET /folder` is what resolves it.
     larkFolderToken: typeof record['larkFolderToken'] === 'string' ? record['larkFolderToken'] : '',
     larkFolderUrl: typeof record['larkFolderUrl'] === 'string' ? record['larkFolderUrl'] : '',
+    gateConfirmations: toConfirmations(record['gateConfirmations']),
     updatedAt: typeof record['updatedAt'] === 'number' ? record['updatedAt'] : 0,
   }
 }
@@ -177,7 +223,7 @@ export interface ProjectStore {
    * @param record - the form's fields; `updatedAt` is stamped here.
    * @returns the stored record.
    */
-  put: (record: Omit<ProjectRecord, 'updatedAt' | 'larkFolderToken' | 'larkFolderUrl'>) => Promise<ProjectRecord>
+  put: (record: Omit<ProjectRecord, 'updatedAt' | 'larkFolderToken' | 'larkFolderUrl' | 'gateConfirmations'>) => Promise<ProjectRecord>
   /**
    * Record the project's Feishu folder, or adopt one for it.
    *
@@ -194,6 +240,29 @@ export interface ProjectStore {
     name: string
     folderToken: string
     url: string
+  }) => Promise<ProjectRecord>
+  /**
+   * Record (or clear) one manual answer of one gate.
+   *
+   * It is a call of its own rather than a field of {@link ProjectStore.put}
+   * because the two writes come from different surfaces and carry different
+   * authority: the form writes what the operator typed, while this writes a
+   * judgement the host itself witnessed (`by` is resolved from the operator's own
+   * Feishu login, not sent by the page).
+   *
+   * A `confirmed: false` answer CLEARS the entry, so a withdrawn confirmation is
+   * indistinguishable from one never given — see `gateConfirmations` for why that
+   * is the honest encoding.
+   * @param input - the project, the gate and item key, the answer, and the citation.
+   * @returns the stored record.
+   */
+  setGateConfirmation: (input: {
+    path: string
+    name: string
+    key: string
+    confirmed: boolean
+    by: string
+    at: number
   }) => Promise<ProjectRecord>
   /** Read every record. */
   all: () => Promise<readonly ProjectRecord[]>
@@ -266,6 +335,9 @@ export function createProjectStore(): ProjectStore {
         // carry it.
         larkFolderToken: previous?.larkFolderToken ?? '',
         larkFolderUrl: previous?.larkFolderUrl ?? '',
+        // And so does a manual answer: the edit form asks about the product, not
+        // about the customer conversation, so a rename must not withdraw one.
+        gateConfirmations: previous?.gateConfirmations ?? {},
         updatedAt: Date.now(),
       }
       records[input.path] = record
@@ -282,6 +354,30 @@ export function createProjectStore(): ProjectStore {
         productCardId: previous?.productCardId ?? '',
         larkFolderToken: input.folderToken,
         larkFolderUrl: input.url,
+        gateConfirmations: previous?.gateConfirmations ?? {},
+        updatedAt: Date.now(),
+      }
+      records[input.path] = record
+      await save(records)
+      return record
+    },
+    setGateConfirmation: async (input) => {
+      const records = await load()
+      const previous = records[input.path]
+      // The map is rebuilt rather than mutated: `previous` came out of a parse and
+      // may be frozen by the caller's expectations, so editing it in place would
+      // be a write into an object this module does not own.
+      const answers: Record<string, GateConfirmationRecord> = { ...(previous?.gateConfirmations ?? {}) }
+      if (input.confirmed) answers[input.key] = { by: input.by, at: input.at }
+      else delete answers[input.key]
+      const record: ProjectRecord = {
+        name: previous?.name ?? input.name,
+        path: input.path,
+        background: previous?.background ?? 'unsure',
+        productCardId: previous?.productCardId ?? '',
+        larkFolderToken: previous?.larkFolderToken ?? '',
+        larkFolderUrl: previous?.larkFolderUrl ?? '',
+        gateConfirmations: answers,
         updatedAt: Date.now(),
       }
       records[input.path] = record

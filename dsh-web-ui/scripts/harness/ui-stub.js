@@ -17,7 +17,7 @@
  * imported one, and a hand-kept list would drift silently. Regenerating means a
  * newly used icon is always exportable, and the harness never needs an edit.
  */
-import { createElement as h } from 'react'
+import { createElement as h, useEffect } from 'react'
 
 /** A control that renders a real element of the given tag. */
 const asTag = (tag, name) => function Stub(props) {
@@ -32,19 +32,69 @@ const asTag = (tag, name) => function Stub(props) {
  * its mode (adding a project vs editing one), and copy is half of what this
  * harness exists to check — a stub that dropped them would make the two modes
  * indistinguishable to the test.
+ *
+ * Escape is implemented because the real primitive implements it, and the account
+ * drawer's behaviour under Escape is asserted: its own listener stands down while
+ * a modal is up, so the modal has to be the thing that closes.
  */
-export const Modal = ({ open, title, description, className, children, footer }) => (open
-  ? h('div', { 'data-stub': 'Modal', ...(className === undefined ? {} : { className }) },
+export const Modal = ({ open, onClose, title, description, className, children, footer }) => {
+  useEffect(() => {
+    if (!open) return undefined
+    const onKeyDown = (event) => { if (event.key === 'Escape') onClose() }
+    document.addEventListener('keydown', onKeyDown)
+    return () => { document.removeEventListener('keydown', onKeyDown) }
+  }, [open, onClose])
+  return open
+    ? h('div', {
+      'data-stub': 'Modal',
+      // The real primitive's own ARIA contract, kept here because the account
+      // drawer asserts a PAGE-level rule against it: Escape stands down while any
+      // [role="dialog"] is up, so a stub without the role would let the drawer
+      // close under a modal and the test would pass on a lie.
+      role: 'dialog',
+      'aria-modal': 'true',
+      'aria-label': title,
+      ...(className === undefined ? {} : { className }),
+    },
     h('h2', { 'data-stub': 'ModalTitle' }, title),
     description === undefined ? null : h('p', { 'data-stub': 'ModalDescription' }, description),
     children,
     footer)
-  : null)
+    : null
+}
 
 /** A tooltip is decoration: the harness renders its child and nothing else. */
 export const Tooltip = ({ children }) => h('div', { 'data-stub': 'Tooltip' }, children)
 
+/**
+ * Outside-pointer dismissal, as a real document listener.
+ *
+ * The account dock's drawer uses this, and "a click anywhere else closes the
+ * drawer" is one of the behaviours the account harness checks — so this stub
+ * keeps the real semantics (pointerdown, outside the root, only while open)
+ * rather than degrading to a no-op.
+ */
+export const useDismissOnOutsidePointer = (root, open, setOpen) => {
+  useEffect(() => {
+    if (!open) return undefined
+    const onDown = (event) => {
+      if (event.target instanceof Node && !(root.current?.contains(event.target) ?? false)) setOpen(false)
+    }
+    document.addEventListener('pointerdown', onDown)
+    return () => { document.removeEventListener('pointerdown', onDown) }
+  }, [root, open, setOpen])
+}
+
 export const Button = asTag('button', 'Button')
-export const Input = props => h('input', { 'data-stub': 'Input', ...props })
+
+/**
+ * A real `<input>` carrying its value and change handler.
+ *
+ * `icon` is DROPPED rather than forwarded: the real primitive renders a glyph
+ * inside a wrapper, and forwarding the element to a DOM node would leak
+ * `icon="[object Object]"` onto the markup. The icon is decoration; the value and
+ * the handler are what a harness drives.
+ */
+export const Input = ({ icon, ...rest }) => h('input', { 'data-stub': 'Input', ...rest })
 
 /* ICONS: generated — see the module comment above. */

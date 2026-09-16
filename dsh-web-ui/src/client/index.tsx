@@ -68,6 +68,31 @@ export function apply(ctx: ClientContext): void {
 
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-web-ui: dictionaries')
 
+  // The host's plugin inventory, as the account drawer's Plugins block reads it.
+  //
+  // It arrives through `ctx.inject` rather than this plugin's own `inject` list,
+  // and that difference is the whole design: a REQUIRED dependency would leave
+  // this column — the page's navigation — waiting on a Loader inventory unit that
+  // a deployment may not compose. With an optional arm, a host that has one fills
+  // the block and a host that does not renders the reason (see PluginsPanel.tsx).
+  //
+  // BOTH names are injected, which is what the shipped inventory page does too:
+  // `remote.pluginInventory` is the namespace service (its presence is the
+  // capability), and `remote` is the object the namespace hangs off — cordis
+  // refuses to read a service a fiber did not declare, so naming only the
+  // namespace leaves `scope.remote` unreachable.
+  let listPlugins: ShellInjected['listPlugins'] | undefined
+  ctx.inject(['remote', 'remote.pluginInventory'], (scope: ClientContext) => {
+    listPlugins = async () => {
+      const result = await scope.remote.pluginInventory.list()
+      if (!result.ok) {
+        throw new Error(`${result.error.code}: ${result.error.message}`)
+      }
+      return result.value
+    }
+    scope.effect(() => () => { listPlugins = undefined }, 'dsh-web-ui: plugin inventory capability')
+  })
+
   // The registrant's business face: the runtime services a slot component may
   // not touch directly (a component never sees ctx). The selection writer comes
   // in as the registration's baked action, so the face is built per
@@ -93,6 +118,14 @@ export function apply(ctx: ClientContext): void {
     archiveSession: (sessionId) => ctx.workspaces.archiveSession(sessionId),
     renameWorkspace: async (workspaceId, title) => { await ctx.workspaces.rename(workspaceId, title) },
     deleteWorkspace: async (workspaceId) => { await ctx.workspaces.delete(workspaceId) },
+    // Read lazily, so the block reports "no inventory in this composition" at
+    // the moment it is asked rather than at the moment this face was built.
+    listPlugins: () => {
+      if (listPlugins === undefined) {
+        return Promise.reject(new Error('this host composes no plugin inventory unit'))
+      }
+      return listPlugins()
+    },
   })
 
   // One selection handle, mounted by both root-scope registrations: the column
@@ -133,6 +166,14 @@ export function apply(ctx: ClientContext): void {
       return ctx.slots.register({
         name: 'shell.overlay',
         id: 'dsh-web-ui-actions',
+        // The row's own child seat: the strip at the conversation header's right
+        // is ONE row shared with peer plugins, and a row can only be shared by
+        // whoever renders it. `my-sider` registers its two panel toggles into
+        // this seat (contract.ts has the reasoning); the disposer the registration
+        // returns takes the seat — and therefore those toggles — down with it.
+        children: {
+          'shell.action': { kind: 'list', scope: 'root' },
+        },
         locale: NS,
         registrant: 'dsh-web-ui',
       }, ActionBar)
@@ -185,6 +226,14 @@ export function apply(ctx: ClientContext): void {
             'sidebar.workspaces': { kind: 'single', scope: 'root' },
             'sidebar.settings': { kind: 'single', scope: 'root' },
             'sidebar.footer.action': { kind: 'list', scope: 'root' },
+            // The two seats this plugin ADDS: the bottom-left account dock and
+            // the rows inside its drawer. The shipped sidebar declared five, so
+            // an occupant registered against either of these by the plugin that
+            // owns the account (dsh-feishu-login) has no home in the shipped
+            // shell at all — these keys are this plugin's contract, and
+            // contract.ts documents the shape the other side mirrors.
+            'sidebar.account': { kind: 'single', scope: 'root' },
+            'sidebar.account.menu': { kind: 'list', scope: 'root' },
           },
           inject: (actions: SelectionActions) => face(workspaceId => { actions.select(workspaceId) }),
           registrant: 'dsh-web-ui',

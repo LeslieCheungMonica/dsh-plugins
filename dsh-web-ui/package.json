@@ -31,10 +31,12 @@
     "smoke:new-project": "node scripts/smoke-new-project.mjs",
     "smoke:git": "node scripts/smoke-git.mjs",
     "harness:folder-route": "node scripts/harness/folder-route.mjs",
+    "harness:stage-gate": "node scripts/harness/stage-gate.mjs",
     "harness:project-record": "node scripts/harness/project-record.mjs",
     "harness:folder-flow": "node scripts/harness/tsdown.mjs && node scripts/harness/folder-flow.mjs",
     "harness:new-project-form": "node scripts/harness/tsdown.mjs && node scripts/harness/new-project-form.mjs",
-    "harness:lark-panel": "node scripts/harness/tsdown.mjs && node scripts/harness/lark-panel.mjs"
+    "harness:lark-panel": "node scripts/harness/tsdown.mjs && node scripts/harness/lark-panel.mjs",
+    "harness:account-dock": "node scripts/harness/tsdown.mjs && node scripts/harness/account-dock.mjs"
   },
   "devDependencies": {
     "tsdown": "^0.22.2",

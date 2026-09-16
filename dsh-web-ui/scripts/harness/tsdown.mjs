@@ -1,7 +1,8 @@
 /**
- * Bundle the New Project flow, its form, and the Feishu folder panel for the
- * offline harnesses (`folder-flow.mjs`, `new-project-form.mjs` through
- * `form-entry.tsx`, and `lark-panel.mjs` through `panel-entry.tsx`).
+ * Bundle the New Project flow, its form, the Feishu folder panel, and the
+ * account dock for the offline harnesses (`folder-flow.mjs`,
+ * `new-project-form.mjs` through `form-entry.tsx`, `lark-panel.mjs` through
+ * `panel-entry.tsx`, and `account-dock.mjs` through `account-entry.tsx`).
  *
  * The harnesses verify the flow and the panel through the code the shipped client
  * bundle actually contains, so they are bundled from source rather than
@@ -49,6 +50,7 @@ await build({
     'project-flow': new URL('./entry.ts', here).pathname,
     'new-project-form': new URL('./form-entry.tsx', here).pathname,
     'lark-panel': new URL('./panel-entry.tsx', here).pathname,
+    'account-dock': new URL('./account-entry.tsx', here).pathname,
   },
   outDir: new URL('./out', here).pathname,
   format: ['esm'],

@@ -9,6 +9,9 @@
  * the settings panel, the brand seats, the footer actions) register into this
  * column instead of losing their home.
  *
+ * It declares two seats the shipped shell never had, for the account dock at the
+ * column's bottom-left corner (see the `SlotMap` merge below).
+ *
  * The type-only imports below pull the SlotMap merges of the owners:
  * ui-layout declares `sidebar` (its owner share is the live column state this
  * component receives) and ui-sidebar declares the five child keys with their
@@ -17,6 +20,10 @@
 import type {
   PropsLocale, PropsRenderSlots, PropsRuntime, PropsStore,
 } from '@deepseek-ai/dsh-client-ui-slots'
+// Type-only: the DTO the host's plugin-inventory Remote answers with. Erased at
+// build (this plugin takes no runtime dependency on the remote layer — the
+// namespace arrives through `ctx.inject` in the browser half).
+import type { PluginInventorySnapshot } from '@deepseek-ai/dsh-api-remotes/client'
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import type {
@@ -65,20 +72,143 @@ export interface ShellInjected {
   renameWorkspace: (workspaceId: WorkspaceId, title: string) => Promise<void>
   /** Delete a project; its sessions fall back to the ungrouped bucket. */
   deleteWorkspace: (workspaceId: WorkspaceId) => Promise<void>
+  /**
+   * Read the host's own plugin inventory: one entry per non-group Loader row,
+   * with its exact module specifier, its effective enablement, and the phase of
+   * its root Fiber.
+   *
+   * It is the SAME read the Settings → Plugins page performs (`remote.pluginInventory`),
+   * not a second source: the drawer's block and the settings page cannot
+   * disagree about what is loaded. It rejects when this composition has no
+   * inventory unit at all, which the block renders as a state rather than as an
+   * empty list — "nothing is loaded" and "nobody can say" are different answers.
+   */
+  listPlugins: () => Promise<PluginInventorySnapshot>
 }
 
-/** Child keys this plugin declares in the same registration that occupies `sidebar`. */
+/**
+ * The two seats this plugin ADDS to the shipped set: the account dock at the
+ * column's bottom-left corner.
+ *
+ * They exist because the account controls used to live in the frame's top-right
+ * corner, owned by a different plugin (`dsh-feishu-login`, which registers the
+ * occupants). Moving the controls into this column therefore has to be a SEAT
+ * move, not a code move: this plugin owns the geometry (the row, the drawer, and
+ * what the drawer holds), and the plugin that owns the identity keeps rendering
+ * it. Neither plugin imports the other — a client bundle may not (`tsdown.config.ts`
+ * refuses cross-plugin value imports), and a slot key is the same string contract
+ * one package's declaration hands another's registration.
+ *
+ * The owner share is deliberately small: the identity occupant gets the column
+ * state and the drawer's open flag so it can render itself for a rail row or a
+ * wide row, and a menu row gets only the verb that closes the drawer it sits in.
+ */
+declare module '@deepseek-ai/dsh-client-ui-slots' {
+  interface SlotMap {
+    /**
+     * The signed-in identity inside the column's bottom-left row. Declared by
+     * this plugin's `sidebar` entry; the identity's own plugin registers the
+     * occupant. The row itself — its button, its chevron, and the drawer it
+     * opens — stays this plugin's, so a deployment with no identity plugin still
+     * gets a working drawer (see Shell.tsx's fallback).
+     */
+    'sidebar.account': { kind: 'single'; scope: 'root'; owner: SidebarAccountOwnerProps }
+    /**
+     * Rows at the bottom of the account drawer, under this plugin's own Usage and
+     * Settings rows. Declared by this plugin's `sidebar` entry; the identity
+     * plugin registers the one action that ends the session.
+     */
+    'sidebar.account.menu': { kind: 'list'; scope: 'root'; owner: SidebarAccountMenuOwnerProps }
+  }
+}
+
+/**
+ * Owner share of the account identity seat: the column state its content must
+ * render against.
+ *
+ * Deliberately no `open` flag. The expanded state belongs to the row — a button
+ * that carries `aria-expanded` and that the occupant is content INSIDE of — so
+ * handing it to the occupant as well would be two homes for one fact, and the
+ * two would disagree in the rail, where the row expands the column instead of
+ * opening a drawer.
+ */
+export interface SidebarAccountOwnerProps {
+  /** Whether the column renders wide content (false = 56px rail, avatar only). */
+  wide: boolean
+}
+
+/**
+ * Owner share of one row inside the account drawer: nothing.
+ *
+ * The drawer hands a row no state and no verb, and that is the point — every
+ * row this corner has today either acts on the session (sign out, which
+ * navigates away or reports its own failure in place) or opens a surface of its
+ * own above the drawer (the shipped Settings trigger). Neither needs the drawer
+ * closed behind it, so nothing here pretends otherwise; a row that does need a
+ * verb gets one when it exists, not before.
+ */
+export interface SidebarAccountMenuOwnerProps {
+  /** Marker field: the row owns its own content and behaviour. */
+  children?: never
+}
+
+/**
+ * The seat this plugin's ACTION ROW declares: one horizontal strip of controls
+ * at the conversation header's right, above its hairline.
+ *
+ * It is the same move as `sidebar.account`, applied to the frame's top-right
+ * corner. Two peer plugins each want a control there — this plugin's Git, and
+ * `my-sider`'s two panel toggles — and two independently `position: fixed` bars
+ * cannot make one row: each would have to know the other's width to know where to
+ * start, and the arithmetic breaks silently the moment either gains a control
+ * (this plugin's own README keeps a terminal control ready to come back).
+ *
+ * So the ROW is owned here and the CONTROLS are not: `my-sider` renders its
+ * toggles into this seat, keeps its own open state and its own panels, and the
+ * strip lays them out. A deployment without `my-sider` gets the row with Git
+ * alone, and a deployment without `dsh-web-ui` gets `my-sider`'s own floating bar
+ * (see that plugin's index.tsx for the bounded fallback).
+ *
+ * Declared by the ActionBar registration, not by the sidebar one: a child key
+ * belongs to the entry that renders it.
+ */
+declare module '@deepseek-ai/dsh-client-ui-slots' {
+  interface SlotMap {
+    /** Peer controls sharing this plugin's action row. */
+    'shell.action': { kind: 'list'; scope: 'root'; owner: ShellActionOwnerProps }
+  }
+}
+
+/**
+ * Owner share of one control in the action row: nothing.
+ *
+ * The row supplies no state and no verb, and that is the design — an occupant
+ * owns its own control's look, its own open flag, and its own surface. What the
+ * row contributes is only what a row can: order, spacing, and a place above the
+ * conversation header's line.
+ */
+export interface ShellActionOwnerProps {
+  /** Marker field: the occupant owns its own content and behaviour. */
+  children?: never
+}
+
+/**
+ * Child keys this plugin declares in the same registration that occupies `sidebar`.
+ */
 export type ShellChildSlots =
   | 'sidebar.brand.mark'
   | 'sidebar.brand.name'
   | 'sidebar.workspaces'
   | 'sidebar.settings'
   | 'sidebar.footer.action'
+  | 'sidebar.account'
+  | 'sidebar.account.menu'
 
 /**
  * Composed props of the owned column: the frame's column state + the global
- * session/workspace hooks (`PropsRuntime`), the five child-render shares, this
- * plugin's injected face, and the typed `t` seat.
+ * session/workspace hooks (`PropsRuntime`), every child-render share (the five
+ * re-declared seats plus this plugin's own account pair), this plugin's injected
+ * face, and the typed `t` seat.
  */
 export type ShellProps =
   & PropsRuntime<'sidebar'>

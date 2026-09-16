@@ -1,12 +1,26 @@
 /**
- * The FDE delivery flow: the six ordered stages a project moves through, and the
- * one fact this plugin holds about it — which stage the project is at.
+ * The FDE delivery flow: the ordered stages a project moves through — ending at a
+ * TERMINAL 完成 node — and the facts this plugin holds about it: which stage the
+ * project is at, and which move it may make next.
  *
  * The flow is a LINE, not a checklist. Everything the tag renders follows from
  * that one order (`StageTag.tsx`): a stage is `done` because it sits BEHIND the
  * current one, `current` because it IS it, and `pending` because it sits AHEAD
  * of it. There is therefore no per-stage flag to keep in step — one index
  * decides the whole picture, which is why nothing here can go inconsistent.
+ *
+ * ## The line is walked, not jumped
+ *
+ * A move is ONE step forward, and only one: {@link canEnterStage} is the whole
+ * rule, and it is what makes the flow a delivery pipeline rather than a slider.
+ * Backward moves are refused for the same reason — the flow records work that
+ * has been DONE, so "going back" would be un-recording it, and an operator who
+ * finds an earlier stage unfinished has the gated transition below to stop them
+ * instead (see `src/shared/stagegatewire.ts` for the gates themselves).
+ *
+ * The consequence is deliberate: a stage that is not the current one and not the
+ * next one is LOCKED, and the lock is positional — one index still decides
+ * everything, so there is no per-row lock flag either.
  *
  * The current stage is a per-PROJECT fact for the same reason the project
  * selection is: it describes one project's delivery, and the tag sits in a
@@ -39,6 +53,17 @@ export const STAGE_KEYS = [
   'stage.test',
   'stage.deploy',
   'stage.acceptance',
+  /**
+   * The TERMINAL node.
+   *
+   * It is a stage like the others — the project sits on it, and it is reached by
+   * the same one-step-forward move — but it means the flow is OVER rather than
+   * that work is under way, which is the one thing the panel says differently
+   * about it (see {@link stageStatusKey}). Nothing is gated on it: the gate at
+   * index 1 is about being able to START the delivery, and by the time a project
+   * reaches 完成 every stage behind it has already been walked.
+   */
+  'stage.done',
 ] as const satisfies readonly WebUiKey[]
 
 /** One stage of the flow. */
@@ -68,6 +93,36 @@ export const STAGE_STATUS_KEYS = {
   current: 'stage.status.current',
   pending: 'stage.status.pending',
 } as const satisfies Record<StageState, WebUiKey>
+
+/**
+ * Whether a stage is the flow's END.
+ *
+ * The last stage is terminal by definition: there is nothing after it to move on
+ * to, so a project sitting on it has finished the delivery rather than started a
+ * piece of work. Everything else about it stays positional.
+ * @param index - the stage being asked about.
+ * @returns true when `index` is the final stage of the flow.
+ */
+export function isFinalStage(index: number): boolean {
+  return index === STAGE_COUNT - 1
+}
+
+/**
+ * The word a stage's row carries, given where the project is.
+ *
+ * Positional, with ONE exception that is itself a fact about the flow rather than
+ * about the stage: the terminal node is reached BY finishing, so while the project
+ * sits on it the honest word is "已完成" and not "运行中" — nothing is running at
+ * the end of a delivery. It is stated here, once, so the panel and the tag cannot
+ * disagree about it.
+ * @param index - the stage being asked about.
+ * @param current - the project's current stage index.
+ * @returns the dictionary key of the row's status word.
+ */
+export function stageStatusKey(index: number, current: number): WebUiKey {
+  if (index === current && isFinalStage(index)) return 'stage.status.finished'
+  return STAGE_STATUS_KEYS[stageStateAt(index, current)]
+}
 
 /** Storage key of the persisted per-project stage map. */
 const STORE_KEY = 'dsh-web-ui.fde-stage'
@@ -146,5 +201,35 @@ export function stageStateAt(index: number, current: number): StageState {
   if (index < current) return 'done'
   if (index === current) return 'current'
   return 'pending'
+}
+
+/**
+ * Whether a stage may be entered from the project's current stage.
+ *
+ * One step forward is the ONLY move the flow allows: a jump would record work
+ * that was never done, and a step back would un-record it. Everything the panel
+ * refuses is derived from this one answer, so the lock can never disagree with
+ * the stage it is drawn from.
+ * @param current - the project's current stage index.
+ * @param target - the stage the operator clicked.
+ * @returns true when `target` is exactly the next stage.
+ */
+export function canEnterStage(current: number, target: number): boolean {
+  return target === current + 1
+}
+
+/**
+ * Whether one stage is LOCKED: neither the stage the project is at (which is not
+ * a move) nor the one it may move to.
+ *
+ * The current stage is deliberately not locked — it is the row the panel puts
+ * focus on when it opens, and a disabled button cannot take focus — while its
+ * click is a no-op (see `choose` in `StageTag.tsx`).
+ * @param index - the stage being asked about.
+ * @param current - the project's current stage index.
+ * @returns true when the row offers no move at all.
+ */
+export function isStageLocked(index: number, current: number): boolean {
+  return index !== current && !canEnterStage(current, index)
 }
 

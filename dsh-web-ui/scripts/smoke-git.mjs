@@ -759,6 +759,14 @@ const recordRegistration = (options, component) => {
 plugin.apply({
   effect: fn => fn(),
   on: () => {},
+  // Cordis mixes `inject` into every context; this stub deliberately answers it
+  // by NOT invoking the callback. The browser half arms its optional capabilities
+  // (the host's plugin inventory) through it, so leaving it unarmed is exactly the
+  // composition this smoke test means to model: a host with no inventory unit,
+  // where the account drawer's Plugins block renders a reason instead of a list.
+  // It also proves the arm is genuinely optional — a REQUIRED dependency here
+  // would leave this column, and the git drawer under test, unmounted.
+  inject: () => () => {},
   logger: () => ({ info() {}, warn() {}, error() {} }),
   locale: { register: () => () => {} },
   slots: {
@@ -924,10 +932,20 @@ const section = text => qa('[data-wui="gitDisclosure"]').find(element => element
 /** One action button inside the changes tab, by its label. */
 const tiny = label => qa('[data-wui="gitTinyAction"]').find(element => element.textContent === label)
 
-/** Props for the action bar. A root-scope seat has no session id. */
+/** Every key the action row asked its renderSlot face for, in order. */
+const actionSeatCalls = []
+
+/**
+ * Props for the action row. A root-scope seat has no session id, and its
+ * `shell.action` child seat is answered here: with no peer plugin registered, the
+ * real renderer draws nothing for it, which is what this stub reproduces — while
+ * still recording that the row ASKED, since a row that forgot the seat would
+ * silently drop every peer control on a deployment that has one.
+ */
 const barProps = (items, sessions = { current: 's1', byId: {} }) => ({
   useSessions: selector => selector(sessions),
   useWorkspaces: selector => selector({ items, recentWorkspaceId: 'w1' }),
+  renderSlot: (key) => { actionSeatCalls.push(key); return null },
   t,
 })
 
@@ -942,6 +960,9 @@ check('the bar offers the Git control', barButton('Git') !== undefined,
   barButtons().map(button => button.textContent).join(' | '))
 check('the bar carries exactly one control',
   barButtons().length === 1, barButtons().map(button => button.textContent).join(' | '))
+check('the row hosts the shared action seat, once per render',
+  actionSeatCalls.length > 0 && actionSeatCalls.every(key => key === 'shell.action'),
+  actionSeatCalls.join(' | '))
 check('the right-panel and terminal controls are gone, as asked',
   barButton('Panel') === undefined && barButton('Terminal') === undefined)
 check('the git drawer starts closed', q('[data-wui="gitDrawer"]') === null)

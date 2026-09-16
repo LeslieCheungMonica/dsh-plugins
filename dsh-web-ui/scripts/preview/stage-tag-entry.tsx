@@ -39,6 +39,17 @@ const t = ((key: string, params?: Record<string, unknown>): string => {
 }) as T
 
 /**
+ * The preview project's directory.
+ *
+ * It exists so the gated transition has something to check: the real component
+ * asks `GET /dsh-web-ui/stage-gate/check?path=…&to=…`, and the measurement
+ * script's server answers that route per scenario. A preview with no path would
+ * exercise the one arm of the gate the client can refuse on its own ("no project
+ * selected"), which is a different behaviour from the one this page is for.
+ */
+const PREVIEW_PROJECT_PATH = '/tmp/dsh-web-ui-preview/订单中心重构'
+
+/**
  * One column, reduced to the parts the tag's own rules are scoped by.
  * @param props - the layout, the scope key, and the project name.
  * @returns the column element.
@@ -66,6 +77,10 @@ function Column({ wide, scopeKey, scopeLabel }: {
     createElement('span', { 'data-wui': 'iconButton', 'data-wui-accent': 'true' }, '＋')),
   createElement(StageTag, {
     scopeKey,
+    // The project's DIRECTORY, which is what a gated transition is checked
+    // against. The measurement script answers the gate route itself (its own
+    // HTTP server does), so this value only has to be a non-empty path.
+    scopePath: PREVIEW_PROJECT_PATH,
     scopeLabel,
     rail: !wide,
     t,
