@@ -26,6 +26,15 @@
  *    asked in the panel with the exact path or branch in the sentence, not in a
  *    generic browser modal.
  *
+ * A project is not always one repository. A directory holding two packages that
+ * each carry their own `.git` has no repository of its own, so the drawer asks
+ * the host what the project holds and works on ONE of them: the first candidate
+ * until the operator picks another in the header's switcher. Everything below —
+ * the four tabs, the mutations, the journal — is about the SELECTED repository,
+ * which is why the selection is a single `repoDir` and not a per-tab choice: a
+ * branch list from one checkout beside a diff from another would be a page about
+ * nothing.
+ *
  * The component renders through a portal onto `document.body`: the session
  * header it is mounted from is inside a grid whose tracks animate, and a
  * `position: fixed` drawer inside an animating track would move with it.
@@ -36,16 +45,19 @@ import { createPortal } from 'react-dom'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import {
-  IconBranchOutline16, IconCheckOutline14, IconCloseOutline16, IconEllipsisOutline16,
+  IconBranchOutline16, IconCheckOutline14, IconChevronDownOutline14,
+  IconCloseOutline16, IconEllipsisOutline16,
   IconLoadingOutline16, IconRefreshOutline16, IconWarningOutline16,
   Menu, Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { MenuEntry } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
-import type { GitAction, GitActionArgs, GitActionResult, GitError, GitOverview } from '../shared/gitwire.ts'
+import type {
+  GitAction, GitActionArgs, GitActionResult, GitError, GitOverview, GitRepoRef,
+} from '../shared/gitwire.ts'
 import type { NS } from './contract.ts'
 import {
-  readBranches, readOverview, runAction,
+  discoverRepos, readBranches, readOverview, runAction,
 } from './gitapi.ts'
 import { ConfirmDialog } from './ConfirmDialog.tsx'
 import { TextPromptDialog, type PromptSecondField } from './TextPromptDialog.tsx'
@@ -116,7 +128,7 @@ export interface GitTabProps extends GitTabCommon {
 
 /** Props of the drawer itself. */
 export interface GitPanelProps {
-  /** The work-tree directory: the current session's project path. */
+  /** The PROJECT directory: the current session's project path. */
   readonly dir: string
   /** The plugin's translator. */
   readonly t: TranslateNS<typeof NS>
@@ -149,10 +161,22 @@ export function GitPanel({ dir, t, onClose }: GitPanelProps): ReactNode {
   const [status, setStatus] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null)
   const [prompt, setPrompt] = useState<GitPromptRequest | null>(null)
   const [asked, setAsked] = useState<Confirmation | null>(null)
+  // The project's repositories, and which one the drawer is about. `null` means
+  // discovery has not answered yet — and since a project with no repository at
+  // all is a real state whose repairs live in THIS panel (the init verb), the
+  // fallback is the project directory itself rather than an empty drawer.
+  const [repos, setRepos] = useState<readonly GitRepoRef[]>([])
+  const [repoDir, setRepoDir] = useState<string | null>(null)
+  /** True when the host found more repositories than it was willing to report. */
+  const [truncated, setTruncated] = useState(false)
+  /** Bumped by the refresh button and after an init, to re-ask what the project holds. */
+  const [discovery, setDiscovery] = useState(0)
+  const [switcherOpen, setSwitcherOpen] = useState(false)
+  const activeDir = repoDir ?? dir
 
-  // One generation for the whole drawer: the refresh button and a project
-  // change both bump it, and every in-flight read compares against it before
-  // touching state.
+  // One generation for the whole drawer: the refresh button, a repository
+  // switch, and a project change all bump it, and every in-flight read compares
+  // against it before touching state.
   const generation = useRef(0)
   // The mutation queue: a ref-held promise chain, so `run` stays a stable
   // callback that never needs to re-create itself to see the latest tail.
@@ -161,15 +185,51 @@ export function GitPanel({ dir, t, onClose }: GitPanelProps): ReactNode {
 
   const bump = useCallback((): void => { setToken(current => current + 1) }, [])
 
+  // What does this project hold? Asked once per project, once per refresh, and
+  // once after an init. A failure here is NOT rendered on its own: the overview
+  // read that follows names the same problem (`git-missing`, `no-directory`) in
+  // the words the panel already uses, and a second error surface would say it
+  // twice. The repositories are dropped so a stale list cannot outlive a failure.
+  useEffect(() => {
+    let cancelled = false
+    setRepos([])
+    setRepoDir(null)
+    setTruncated(false)
+    void discoverRepos(dir).then((answer) => {
+      if (cancelled) return
+      const found = answer.ok ? answer.data.repos : []
+      setRepos(found)
+      setTruncated(answer.ok && answer.data.truncated)
+      // The host orders these shallowest first, with the project's own
+      // repository ahead of the packages, so the first one is the answer an
+      // operator would give: "this project's checkout, or the package it starts
+      // with". Remembering a choice ACROSS opens was deliberately not built —
+      // see the README.
+      setRepoDir(found[0]?.root ?? dir)
+    })
+    return () => { cancelled = true }
+  }, [dir, discovery])
+
   /**
-   * Read the overview, dropping the answer when a newer read has started.
+   * Read the overview of the SELECTED repository — the one every read and every
+   * mutation below is locked to — dropping the answer when a newer read has
+   * started.
+   *
+   * Silent until discovery has answered. Without that, the first read would be
+   * about the PROJECT directory, and on a project whose packages each own their
+   * own repository — the case this mechanism exists for — that read fails and
+   * paints "not a git repository" over a project that holds three of them. The
+   * `repoDir` in the dependency list is what re-runs this once discovery
+   * settles, including when it settles on the project directory itself: a
+   * project with no repository anywhere is the state the init verb repairs.
    * @param announce - whether a failure should also raise the footer strip.
    */
   const loadOverview = useCallback(async (announce: boolean): Promise<void> => {
+    if (repoDir === null) return
     generation.current += 1
     const gen = generation.current
     setLoading(true)
-    const answer = await readOverview(dir)
+    const answer = await readOverview(activeDir)
     if (gen !== generation.current) return
     setLoading(false)
     if (!answer.ok) {
@@ -180,13 +240,13 @@ export function GitPanel({ dir, t, onClose }: GitPanelProps): ReactNode {
     }
     setOverviewError(null)
     setOverview(answer.data)
-  }, [dir])
+  }, [activeDir, repoDir])
 
   useEffect(() => { void loadOverview(false) }, [loadOverview, token])
 
-  // A different project is a different repository: the previous one's status
-  // line would be a sentence about a tree the drawer is no longer showing.
-  useEffect(() => { setStatus(null) }, [dir])
+  // A different repository is a different tree: the previous one's status line
+  // would be a sentence about a checkout the drawer is no longer showing.
+  useEffect(() => { setStatus(null) }, [activeDir])
 
   // Escape closes the drawer, exactly as it closes the shipped popovers. The
   // listener is on the document because focus may sit anywhere in the page.
@@ -226,7 +286,7 @@ export function GitPanel({ dir, t, onClose }: GitPanelProps): ReactNode {
     const task = queue.current.then(async (): Promise<GitActionResult | null> => {
       setBusy(true)
       setStatus(null)
-      const answer = await runAction(args === undefined ? { dir, action } : { dir, action, args })
+      const answer = await runAction(args === undefined ? { dir: activeDir, action } : { dir: activeDir, action, args })
       setBusy(false)
       if (!answer.ok) {
         setStatus({ tone: 'error', text: describe(answer) })
@@ -240,6 +300,10 @@ export function GitPanel({ dir, t, onClose }: GitPanelProps): ReactNode {
           ? t('git.actions.done', { command: answer.data.command })
           : t('git.actions.failed', { command: answer.data.command }),
       })
+      // `init` is the one action that changes the ANSWER to "what does this
+      // project hold": the drawer has just become a repository where there was
+      // none, so the repository list is re-read rather than left stale.
+      if (action === 'init') setDiscovery(current => current + 1)
       // The command may have failed in git's own terms (a conflicted merge, a
       // rejected push) — the tree still changed, so every read is refreshed.
       bump()
@@ -249,7 +313,7 @@ export function GitPanel({ dir, t, onClose }: GitPanelProps): ReactNode {
     // every later one behind a rejected promise.
     queue.current = task.catch(() => null)
     return task
-  }, [bump, dir, t])
+  }, [activeDir, bump, t])
 
   const head = overview?.head
   const currentBranch = head === undefined
@@ -279,6 +343,32 @@ export function GitPanel({ dir, t, onClose }: GitPanelProps): ReactNode {
 
   const [moreOpen, setMoreOpen] = useState(false)
 
+  /**
+   * The repository switcher's entries: one per repository this project holds,
+   * named and placed so two same-named packages can be told apart.
+   */
+  const repoItems = useMemo((): MenuEntry[] => {
+    const entries: MenuEntry[] = [
+      { type: 'label', id: 'repos', text: t('git.repo.menu', { n: repos.length }) },
+      ...repos.map((repo): MenuEntry => ({
+        id: repo.root,
+        label: (
+          <span data-wui="gitRepoOption">
+            <span data-wui="gitRepoOptionName">{repo.name}</span>
+            {/* `.` is the project directory itself: naming it would be a label
+                that says nothing, and the name above already said it. */}
+            {repo.relPath !== '.' && <span data-wui="gitRepoOptionPath">{repo.relPath}</span>}
+          </span>
+        ),
+      })),
+    ]
+    if (truncated) entries.push({ type: 'label', id: 'more', text: t('git.repo.truncated') })
+    return entries
+  }, [repos, t, truncated])
+
+  /** The repository name the header shows, from the read that succeeded. */
+  const repoName = overview?.repo.name ?? (activeDir.split('/').pop() ?? activeDir)
+
   const drawer = (
     // The layer is a positioning container, NOT a scrim: it is click-through, so
     // the drawer can stay open while the operator reads or types behind it. A
@@ -293,9 +383,42 @@ export function GitPanel({ dir, t, onClose }: GitPanelProps): ReactNode {
         <header data-wui="gitHeader">
           <span data-wui="gitMark" aria-hidden="true"><IconBranchOutline16 size={16} /></span>
           <div data-wui="gitHeaderText">
-            <span data-wui="gitRepoName" title={overview?.repo.root ?? dir}>
-              {overview?.repo.name ?? dir.split('/').pop() ?? dir}
-            </span>
+            {/* ONE name element in both states, so the header reads the same
+                whether or not it is clickable: with a single repository a menu
+                of one would be an affordance with nothing behind it, and with
+                several the name IS the switch. */}
+            {repos.length > 1 ? (
+              <Menu
+                open={switcherOpen}
+                anchor={(
+                  <button
+                    type="button"
+                    data-wui="gitRepoSwitch"
+                    aria-label={t('git.repo.switch')}
+                    aria-haspopup="menu"
+                    title={overview?.repo.root ?? activeDir}
+                    onClick={() => { setSwitcherOpen(current => !current) }}
+                  >
+                    <span data-wui="gitRepoName">{repoName}</span>
+                    <IconChevronDownOutline14 size={12} />
+                  </button>
+                )}
+                items={repoItems}
+                selectedId={activeDir}
+                onSelect={(id) => {
+                  setSwitcherOpen(false)
+                  // Only a real change is a switch: re-selecting the repository
+                  // already showing would re-run every read for the same answer.
+                  if (id !== activeDir) setRepoDir(id)
+                }}
+                onClose={() => { setSwitcherOpen(false) }}
+                portal
+                dense
+                align="start"
+              />
+            ) : (
+              <span data-wui="gitRepoName" title={overview?.repo.root ?? activeDir}>{repoName}</span>
+            )}
             <span data-wui="gitBranchLine">
               <span data-wui="gitBranchChip" data-detached={head?.detached === true || undefined}>
                 {loading && overview === null ? t('git.loading') : currentBranch}
@@ -317,7 +440,14 @@ export function GitPanel({ dir, t, onClose }: GitPanelProps): ReactNode {
               data-wui="iconButton"
               aria-label={t('git.refresh')}
               aria-busy={loading || busy || undefined}
-              onClick={() => { void loadOverview(true); bump() }}
+              onClick={() => {
+                // A refresh re-asks the PROJECT too: a package that appeared
+                // since the drawer opened is exactly what the operator is
+                // fixing by pressing this (a `git init` in another terminal).
+                setDiscovery(current => current + 1)
+                void loadOverview(true)
+                bump()
+              }}
             >
               <IconRefreshOutline16 size={14} />
             </button>
@@ -423,7 +553,7 @@ export function GitPanel({ dir, t, onClose }: GitPanelProps): ReactNode {
               <IconWarningOutline16 size={16} />
               <span data-wui="gitEmptyTitle">
                 {overviewError.code === 'not-a-repo'
-                  ? t('git.notRepo', { path: dir })
+                  ? t('git.notRepo', { path: activeDir })
                   : overviewError.message}
               </span>
               <span data-wui="gitEmptyHint">
@@ -476,7 +606,7 @@ export function GitPanel({ dir, t, onClose }: GitPanelProps): ReactNode {
                   which unmounting on tab change would silently discard. */}
               <div data-wui="gitTabPane" data-hidden={tab !== 'branches' || undefined}>
                 <GitBranches
-                  dir={dir}
+                  dir={activeDir}
                   t={t}
                   token={token}
                   run={run}
@@ -487,7 +617,7 @@ export function GitPanel({ dir, t, onClose }: GitPanelProps): ReactNode {
               </div>
               <div data-wui="gitTabPane" data-hidden={tab !== 'changes' || undefined}>
                 <GitChanges
-                  dir={dir}
+                  dir={activeDir}
                   t={t}
                   token={token}
                   run={run}
@@ -497,10 +627,10 @@ export function GitPanel({ dir, t, onClose }: GitPanelProps): ReactNode {
                 />
               </div>
               <div data-wui="gitTabPane" data-hidden={tab !== 'history' || undefined}>
-                <GitHistory dir={dir} t={t} token={token} />
+                <GitHistory dir={activeDir} t={t} token={token} />
               </div>
               <div data-wui="gitTabPane" data-hidden={tab !== 'records' || undefined}>
-                <GitRecords dir={dir} t={t} token={token} />
+                <GitRecords dir={activeDir} t={t} token={token} />
               </div>
             </div>
           )}

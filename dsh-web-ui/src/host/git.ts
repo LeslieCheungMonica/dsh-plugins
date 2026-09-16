@@ -30,14 +30,14 @@
  */
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { stat } from 'node:fs/promises'
-import { basename, isAbsolute, join } from 'node:path'
+import { readdir, realpath, stat } from 'node:fs/promises'
+import { basename, isAbsolute, join, relative } from 'node:path'
 import type {
   GitAction, GitActionArgs, GitActionRequest, GitActionResult, GitBranch,
   GitBranchList, GitChanges, GitCommit, GitCommitDetail, GitCommitFile,
   GitCounts, GitDiff, GitError, GitErrorCode, GitFileChange, GitHead,
   GitOperation, GitOverview, GitRecord, GitRecordList, GitRemote, GitRepo,
-  GitResponse, GitStash,
+  GitRepoList, GitRepoRef, GitResponse, GitStash,
 } from '../shared/gitwire.ts'
 
 /** Field separator this module splits on: an ASCII unit separator. */
@@ -92,6 +92,28 @@ const COMMIT_REF_ACTIONS: ReadonlySet<GitAction> = new Set([
   'checkout', 'merge', 'rebase', 'cherry-pick', 'reset',
 ])
 
+/**
+ * How many directory levels below the project directory discovery looks.
+ *
+ * Three covers what a multi-repository project actually uses — `packages/<pkg>`,
+ * `apps/<app>`, `services/<svc>/<part>` — and stops where a walk would start
+ * offering repositories from directories the operator does not think of as part
+ * of the project at all.
+ */
+const REPO_SCAN_DEPTH = 3
+
+/** How many repositories discovery reports before it admits there are more. */
+const REPO_SCAN_LIMIT = 20
+
+/**
+ * Directory names discovery never walks into. `node_modules` is the whole list
+ * because it is the one that is both enormous and full of checkouts: every
+ * dependency that ships a `.git` would otherwise appear as a package of the
+ * project. Dotted directories are skipped separately (see `scanForRepos`), which
+ * is what keeps `.git` itself out of the walk.
+ */
+const REPO_SCAN_SKIP: ReadonlySet<string> = new Set(['node_modules'])
+
 /** One command's raw outcome. */
 interface GitRun {
   /** The exit status; 1 when the process was killed or could not start. */
@@ -116,6 +138,8 @@ interface CacheEntry {
 
 /** The panel's host face. Every method answers, and none throws. */
 export interface GitService {
+  /** Every repository this project holds, so the panel can offer a switcher. */
+  repos(dir: string): Promise<GitResponse<GitRepoList>>
   /** The repository identity, HEAD, change counts, remotes, stash and tag counts. */
   overview(dir: string): Promise<GitResponse<GitOverview>>
   /** Every local and remote branch with tracking state. */
@@ -190,6 +214,98 @@ function quote(argument: string): string {
  */
 function display(args: readonly string[]): string {
   return ['git', ...args].map(quote).join(' ')
+}
+
+/**
+ * Whether one directory is a work-tree root.
+ *
+ * Existence of `.git` is the test, not its type: a submodule and a linked
+ * worktree both keep a `.git` FILE rather than a directory, and both are
+ * checkouts the operator wants to reach.
+ * @param dir - the directory to test.
+ * @returns whether it holds a repository.
+ */
+async function isRepoRoot(dir: string): Promise<boolean> {
+  try {
+    await stat(join(dir, '.git'))
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Find the repositories nested below one directory.
+ *
+ * The walk is bounded three ways, and each bound is the point: by DEPTH (a
+ * project is not a filesystem), by NAME (`node_modules` holds thousands of
+ * checkouts that belong to dependencies, never to the project), and by COUNT (a
+ * pathological tree must not make opening the drawer a hang). It stops
+ * descending at a repository it finds — nothing inside a package's own checkout
+ * is a separate package of this project, and offering its internals would offer
+ * a repository the operator cannot usefully act on.
+ *
+ * It never follows a symlink: `readdir` reports one as a symlink rather than a
+ * directory, which is also what keeps a cyclic tree from looping forever.
+ * @param dir - the project directory to scan.
+ * @returns the repository roots, shallowest first, one MORE than the report cap
+ *   when there are more than the cap — which is how the caller knows to say so.
+ */
+async function scanForRepos(dir: string): Promise<readonly string[]> {
+  const found: string[] = []
+  /** Whether the walk should stop: one extra root is enough to know there are more. */
+  const done = (): boolean => found.length > REPO_SCAN_LIMIT
+
+  const walk = async (current: string, depth: number): Promise<void> => {
+    if (depth > REPO_SCAN_DEPTH || done()) return
+    let entries
+    try {
+      entries = await readdir(current, { withFileTypes: true, encoding: 'utf8' })
+    } catch {
+      // An unreadable directory is not this feature's problem: it holds no
+      // repository the operator can act on, and failing the whole answer over
+      // one permission bit would hide the repositories that ARE readable.
+      return
+    }
+    // Sorted, so the answer is the same on every machine: `readdir` hands back
+    // the filesystem's order, and the panel shows these in the order it got them.
+    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      if (done()) return
+      if (!entry.isDirectory()) continue
+      if (entry.name.startsWith('.') || REPO_SCAN_SKIP.has(entry.name)) continue
+      const child = join(current, entry.name)
+      if (await isRepoRoot(child)) {
+        found.push(child)
+        continue
+      }
+      await walk(child, depth + 1)
+    }
+  }
+
+  await walk(dir, 1)
+  return found
+}
+
+/**
+ * The path of one repository root as the project directory sees it.
+ *
+ * Measured against BOTH spellings of the project directory, because the two
+ * sources of a root disagree about symlinks: a root git reports is a REAL path
+ * (`rev-parse --show-toplevel` resolves the link, so a project under macOS's
+ * `/var/folders/…` answers `/private/var/folders/…`), while a root the walk
+ * found is spelled from the directory that was asked about. A `..`-walk through
+ * the link is then a description of the same directory, just a worse one, so the
+ * shorter of the two descriptions is the one the operator reads — and `.` means
+ * "the project directory itself" in either spelling.
+ * @param project - the project directory, as it was requested.
+ * @param real - the same directory with symlinks resolved.
+ * @param root - the repository's work-tree root.
+ * @returns the relative path, `.` when the two are the same directory.
+ */
+function relativeTo(project: string, real: string, root: string): string {
+  const shortest = [relative(project, root), relative(real, root)]
+    .sort((a, b) => a.length - b.length)[0] ?? ''
+  return shortest === '' ? '.' : shortest
 }
 
 /**
@@ -747,6 +863,36 @@ export function createGitService(): GitService {
   }
 
   return {
+    async repos(dir) {
+      const checked = await resolveDirectory(dir)
+      if (!checked.ok) return checked
+
+      // Not cached, unlike every read below it. A cache here would answer "this
+      // project holds one repository" for up to a TTL after the operator created
+      // the second one — which is exactly the moment the answer matters most —
+      // and the read is cheap in the way the cached ones are not: one `rev-parse`
+      // and a bounded walk, with no `git` process per repository found.
+      const roots: string[] = []
+      const real = await realpath(dir).catch(() => dir)
+      const top = await run(dir, ['rev-parse', '--show-toplevel'], LOCAL_TIMEOUT_MS)
+      if (top.missing) return fail('git-missing', 'the `git` CLI is not on the host\'s PATH')
+      // The repository the project itself lives in: the project directory, or an
+      // ancestor when the project is a subdirectory of a larger checkout. Absent
+      // is a real answer (a project outside every repository), not a failure —
+      // discovery answers "what is here", including nothing.
+      if (top.code === 0) roots.push(chomp(top.stdout).trim())
+      for (const nested of await scanForRepos(dir)) {
+        if (!roots.includes(nested)) roots.push(nested)
+      }
+
+      const repos: readonly GitRepoRef[] = roots.slice(0, REPO_SCAN_LIMIT).map(root => ({
+        root,
+        name: basename(root),
+        relPath: relativeTo(dir, real, root),
+      }))
+      return pass({ project: dir, repos, truncated: roots.length > REPO_SCAN_LIMIT })
+    },
+
     async overview(dir) {
       const repo = await resolveRepo(dir)
       if (!repo.ok) return repo

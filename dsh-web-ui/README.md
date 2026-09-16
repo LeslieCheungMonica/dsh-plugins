@@ -374,9 +374,89 @@ single-ness is the design:
   guessed "open" on the first render and its first click called `closeDetails()`
   on an already-closed column.
 
-It is about the **current session's project**: the repository is resolved from
-the workspace that accounts for the open session, so switching sessions switches
-repositories without a picker.
+It is about the **current session's project**: the *project* is resolved from the
+workspace that accounts for the open session, so switching sessions switches
+projects without a picker. Which *repository* inside that project the drawer is
+about is a second question, answered below.
+
+### A project with several repositories
+
+A project is not always one checkout. Two packages under one project directory,
+each with its own `.git`, is an ordinary layout — and a monorepo whose own
+repository also holds a package that carries one is another. The drawer used to
+answer those with "not a git repository": it resolved the project directory
+through `rev-parse --show-toplevel`, so a project that is not itself a checkout
+had nothing to show, even with three repositories inside it.
+
+So the drawer now asks the host what the **project** holds, and works on one of
+them:
+
+| Route | Answers |
+|---|---|
+| `GET /dsh-web-ui/git/repos` | every repository this project holds — `root`, `name`, and `relPath` (its path as the project directory sees it) — shallowest first, plus `project` and `truncated` |
+
+Discovery is bounded four ways, and each bound is the point:
+
+- **Depth 3.** A project is not a filesystem. Three levels covers the layouts
+  that exist (`packages/<pkg>`, `apps/<app>`, `services/<svc>/<part>`) and stops
+  where the walk would start offering repositories from directories nobody thinks
+  of as part of the project.
+- **`node_modules` is skipped**, along with every dotted directory (which is what
+  keeps `.git` itself out of the walk). Every dependency that ships a checkout
+  would otherwise appear as a package of the project.
+- **No descent into a repository it found.** Nothing inside a package's own
+  checkout is a separate package of this project.
+- **20 repositories, then it stops and says `truncated`.** A pathological tree
+  must not make opening the drawer a hang.
+
+Two decisions are deliberate and visible in the answer's shape:
+
+- **No `git` process per candidate.** A candidate is found by looking for a
+  `.git` on disk (a directory *or* a file — a submodule and a linked worktree keep
+  a file), so discovery is one `rev-parse` plus a bounded walk. That is also why
+  the switching menu does **not** show each repository's branch: with N
+  repositories that would be N extra processes per open, and the operator is
+  choosing a package, not a state.
+- **Discovery is not cached**, unlike every other read here. A cache would answer
+  "this project holds one repository" for up to a TTL after the operator created
+  the second one — exactly when the answer matters — and this read is cheap in
+  the way the cached ones are not.
+
+`rev-parse --show-toplevel` answers a **real** path, so on a host whose project
+directory is reached through a symlink (macOS `/var` → `/private/var`) git's root
+and a walked root are two spellings of one directory. Each `relPath` is therefore
+measured against both spellings and the shorter description wins, so the menu
+says `pkg-b` rather than a `..`-walk through the link.
+
+In the drawer, all of this shows up as **one control**:
+
+- The header's repository name **becomes the switcher** when the project holds
+  more than one repository — a menu of `name · relPath`, the current one checked.
+  With exactly one repository it stays a plain label: a one-item menu is an
+  affordance with nothing behind it.
+- The first repository is selected until the operator picks another: the
+  project's **own** repository when it has one (`relPath` `.`, which is why the
+  host lists it first), otherwise the shallowest package. A project with no
+  repository anywhere discovers none, and the drawer shows exactly what it always
+  showed — the `not-a-repo` sentence with the **Initialize repository** verb
+  beside it.
+- **Switching is a switch of the whole drawer**, all four tabs at once: they
+  receive the selected repository's root as their `dir`, so a branch list from
+  one checkout can never sit beside a diff from another. The footer status line
+  is cleared (it named a command that ran in the other tree), and so is everything
+  the operator had *typed or opened* for the previous repository — the
+  half-written commit message above all, because the commit button sends whatever
+  `dir` the tab holds and a message written for one package must never be
+  committed against another.
+- The **refresh** button re-asks the project as well as the repository (a package
+  that appeared meanwhile is exactly what it is for), and so does a successful
+  **Initialize repository**.
+
+Not built, deliberately: remembering the choice across opens (discovery is one
+cheap read and the default is deterministic), a repository switcher on the bar's
+Git control itself (the drawer is the only place that knows what is selected), and
+a second picker for submodules (a submodule's checkout is inside its parent's work
+tree, and the drawer's mutations are about the parent).
 
 ### Host half (`src/host/git.ts`, `src/host/git-routes.ts`)
 
@@ -384,6 +464,7 @@ A browser cannot run `git`, so the drawer only ever asks questions:
 
 | Route | Answers |
 |---|---|
+| `GET /dsh-web-ui/git/repos` | every repository the project holds (see above) |
 | `GET /dsh-web-ui/git/overview` | repository identity (root, git dir, in-progress operation), HEAD (`branch`, `upstream`, `ahead`, `behind`), change counts, remotes, stash and tag totals |
 | `GET /dsh-web-ui/git/branches` | every local and remote-tracking branch, with upstream, ahead/behind, `gone`, tip commit and tip date |
 | `GET /dsh-web-ui/git/log?limit=&ref=` | one page of commit history (`1`–`200`) |
@@ -427,7 +508,8 @@ Four rules shape the host half, and each one is load-bearing:
 
 Reads are briefly cached (2 s) so opening the drawer costs one `git status`, not
 one per tab; a settled mutation invalidates the whole cache for its repository,
-so a reader never sees the tree it just changed.
+so a reader never sees the tree it just changed. The one read that is not cached
+is `repos`, for the reason given above.
 
 ### Requirements and limits
 
@@ -439,6 +521,10 @@ so a reader never sees the tree it just changed.
 - The drawer shows **no** blame, interactive rebase, conflict resolution editor,
   or submodule support. A conflict is surfaced as a bucket plus an *abort*
   action; resolving it is the operator's job in an editor.
+- Discovery looks **three levels** below the project directory and reports at
+  most **20** repositories. A repository nested deeper than that, or a 21st one,
+  is not offered — the drawer is not a filesystem browser, and `truncated` says
+  so in the menu rather than pretending the list is complete.
 - The journal is in memory: restarting `dsh web` clears it.
 
 ## The bottom command bar
@@ -1177,13 +1263,21 @@ both boundaries of the git drawer —
    the malformed-request arm, the body cap, and the refusals that matter (an
    option-shaped `ref`, a path escaping the work tree, a branch name git
    rejects, a non-hex commit id). It asserts the argv git actually received by
-   reading back the journal, and that a *refused* action is not journalled at all;
+   reading back the journal, and that a *refused* action is not journalled at all.
+   A second fixture group — a project that is not a repository holding five of
+   them across three levels, one inside `node_modules`, one past the depth cap,
+   plus a project whose own repository holds a package's — pins discovery: the
+   roots, their order, their `relPath`, and that each one answers its own
+   overview;
 2. **browser** — the BUILT `lib/client.js`, loaded through the shell's own
    registration protocol, applied against a stub client context, and rendered
    into a real DOM (`jsdom`). Clicks are dispatched at real nodes: stage →
    unstage → commit → read the commit back in history → read the command back in
    the journal → create a branch through the drawer's own prompt, plus the
-   not-a-repository answer.
+   not-a-repository answer. The multi-repository project is driven the same way:
+   it must open on the first repository rather than on a refusal, list all of them
+   in the header's switcher, switch every tab when another is chosen, and drop the
+   half-typed commit message that belonged to the repository left behind.
 
 The shipped UI primitives are the one stub (their node builds import CSS modules
 Node cannot load — the shell answers them from a browser module table instead).

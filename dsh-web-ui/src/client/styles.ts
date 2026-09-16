@@ -3085,6 +3085,59 @@ const SHELL = `
   font-weight: 600;
 }
 
+/* The header's repository name, when the project holds more than one: the same
+   text, made clickable. It carries no border and no background until hovered, so
+   the header looks identical whether or not there is anything to switch to. */
+[data-wui='gitRepoSwitch'] {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+  margin: 0;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+[data-wui='gitRepoSwitch']:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+[data-wui='gitRepoSwitch']:focus-visible {
+  outline: 2px solid var(--dsh-web-ui-accent);
+  outline-offset: 1px;
+}
+
+/* The switcher's rows: the name the header shows, with the path that tells two
+   same-named packages apart under it. */
+[data-wui='gitRepoOption'] {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  text-align: left;
+}
+
+[data-wui='gitRepoOptionName'] {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+[data-wui='gitRepoOptionPath'] {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+}
+
 [data-wui='gitBranchLine'] {
   display: flex;
   align-items: center;

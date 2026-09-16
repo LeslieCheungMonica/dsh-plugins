@@ -1,7 +1,7 @@
 /**
  * The browser-facing routes of the git panel.
  *
- * Seven exact `GET` reads and one `POST` mutation, each one a single question
+ * Eight exact `GET` reads and one `POST` mutation, each one a single question
  * the panel asks. They are exact rather than prefix routes so the whole surface
  * stays inspectable in the composed tree — a prefix would hide an operation
  * surface behind one entry.
@@ -29,7 +29,7 @@ import { createGitService } from './git.ts'
 import type { GitAction, GitActionArgs, GitActionRequest, GitResponse } from '../shared/gitwire.ts'
 import {
   GIT_ACTION_PATH, GIT_BRANCHES_PATH, GIT_CHANGES_PATH, GIT_COMMIT_PATH,
-  GIT_DIFF_PATH, GIT_LOG_PATH, GIT_OVERVIEW_PATH, GIT_RECORDS_PATH,
+  GIT_DIFF_PATH, GIT_LOG_PATH, GIT_OVERVIEW_PATH, GIT_RECORDS_PATH, GIT_REPOS_PATH,
 } from '../shared/gitwire.ts'
 
 /** Content type of every response this module writes. */
@@ -220,6 +220,8 @@ export function registerGitRoutes(ctx: Context): void {
     }
     sendJson(res, 200, await read(dir, params))
   }
+
+  route(GIT_REPOS_PATH, readRoute('repos', dir => git.repos(dir)), 'repos')
 
   route(GIT_OVERVIEW_PATH, readRoute('overview', dir => git.overview(dir)), 'overview')
 

@@ -27,6 +27,9 @@ export const GIT_ROUTE_PREFIX = '/dsh-web-ui/git'
 /** Repository, HEAD, working-tree counts, remotes — the drawer's opening read. */
 export const GIT_OVERVIEW_PATH = `${GIT_ROUTE_PREFIX}/overview`
 
+/** Every repository one project holds (the drawer's repository switcher). */
+export const GIT_REPOS_PATH = `${GIT_ROUTE_PREFIX}/repos`
+
 /** Every local and remote branch, with tracking state. */
 export const GIT_BRANCHES_PATH = `${GIT_ROUTE_PREFIX}/branches`
 
@@ -98,6 +101,40 @@ export interface GitRepo {
   readonly unborn: boolean
   /** True during a merge, rebase, cherry-pick, revert, or bisect. */
   readonly operation: GitOperation | null
+}
+
+/**
+ * One repository a project holds, as discovery reports it.
+ *
+ * Deliberately identity-only. A candidate is found by looking for a `.git` on
+ * disk, so discovery costs one bounded directory walk and no `git` process per
+ * repository found; everything else the drawer shows about a repository comes
+ * from the reads it makes once that repository is selected. That is also why
+ * there is no branch here to sort by: with N repositories the panel would need N
+ * extra processes per open, and the operator is choosing a PACKAGE, not a state.
+ */
+export interface GitRepoRef {
+  /** Absolute work-tree root — what the drawer sends as `dir` once selected. */
+  readonly root: string
+  /** Display name: the root's basename. */
+  readonly name: string
+  /**
+   * The root's path relative to the project directory, for telling two
+   * same-named packages apart. `.` when the project IS the repository, and a
+   * `..`-prefixed path when the project is a subdirectory of a larger checkout
+   * the repository belongs to.
+   */
+  readonly relPath: string
+}
+
+/** Every repository one project holds, shallowest first. */
+export interface GitRepoList {
+  /** The project directory that was asked about. */
+  readonly project: string
+  /** The repositories. Empty when the project holds none. */
+  readonly repos: readonly GitRepoRef[]
+  /** True when more repositories exist than discovery was willing to report. */
+  readonly truncated: boolean
 }
 
 /** An in-progress multi-step git operation, read from the git directory. */

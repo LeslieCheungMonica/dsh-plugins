@@ -23,11 +23,11 @@
 import type {
   GitActionRequest, GitActionResult, GitBranchList, GitChanges, GitCommit,
   GitCommitDetail, GitDiff, GitError, GitErrorCode, GitOverview, GitRecordList,
-  GitResponse,
+  GitRepoList, GitResponse,
 } from '../shared/gitwire.ts'
 import {
   GIT_ACTION_PATH, GIT_BRANCHES_PATH, GIT_CHANGES_PATH, GIT_COMMIT_PATH,
-  GIT_DIFF_PATH, GIT_LOG_PATH, GIT_OVERVIEW_PATH, GIT_RECORDS_PATH,
+  GIT_DIFF_PATH, GIT_LOG_PATH, GIT_OVERVIEW_PATH, GIT_RECORDS_PATH, GIT_REPOS_PATH,
 } from '../shared/gitwire.ts'
 
 /**
@@ -95,6 +95,19 @@ function search(params: Record<string, string | number | boolean | undefined>): 
     if (value !== undefined) query.set(key, String(value))
   }
   return `?${query.toString()}`
+}
+
+/**
+ * Read every repository one project holds.
+ *
+ * This is the one read that is about the PROJECT rather than about a repository:
+ * a project whose packages each carry their own `.git` has no single answer to
+ * "what is this repository", so the drawer asks what is here first and picks one.
+ * @param dir - the project's absolute directory.
+ * @returns the repositories, shallowest first.
+ */
+export function discoverRepos(dir: string): Promise<GitResponse<GitRepoList>> {
+  return request<GitRepoList>(`${GIT_REPOS_PATH}${search({ dir })}`)
 }
 
 /**

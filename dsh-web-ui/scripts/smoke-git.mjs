@@ -36,7 +36,7 @@
  */
 import { execFileSync } from 'node:child_process'
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
@@ -599,6 +599,147 @@ let domTerminal = null
   domTerminal = { service: termService, origin: termOrigin, server: termServer }
 }
 
+// ── phase 1d: one project that holds several repositories ────────────────────
+console.log('\n# phase 1d — one project, several repositories\n')
+
+/**
+ * Build one scratch repository on its own branch, so a fixture tree can hold
+ * several and each one is distinguishable by the branch its HEAD reports.
+ * @param dir - the directory to create the repository in.
+ * @param branch - the initial branch name.
+ */
+const makeRepo = (dir, branch) => {
+  mkdirSync(dir, { recursive: true })
+  const run = (...args) => execFileSync('git', args, { cwd: dir, stdio: 'pipe' })
+  run('init', '-q', '-b', branch, '.')
+  run('config', 'user.email', 'smoke@dsh.test')
+  run('config', 'user.name', 'Smoke Test')
+  writeFileSync(join(dir, 'README.md'), `# ${branch}\n`)
+  run('add', '.')
+  run('commit', '-qm', `first commit on ${branch}`)
+}
+
+/**
+ * A project directory that is NOT itself a repository but holds five of them:
+ * two at the first level, one three levels down (the deepest the scan reaches),
+ * one past the scan's depth cap, and one inside `node_modules`.
+ */
+const nest = join(sandbox, 'nest')
+mkdirSync(nest)
+makeRepo(join(nest, 'pkg-a'), 'alpha')
+makeRepo(join(nest, 'pkg-b'), 'beta')
+makeRepo(join(nest, 'tools', 'nested', 'pkg-e'), 'epsilon')
+makeRepo(join(nest, 'tools', 'nested', 'deeper', 'pkg-f'), 'zeta')
+makeRepo(join(nest, 'node_modules', 'dep'), 'dep-branch')
+
+/** A project directory with no repository anywhere in it, for the empty answer. */
+const bare = join(sandbox, 'bare')
+mkdirSync(bare)
+
+/** A project whose OWN repository also holds a package with a repository of its own. */
+const mono = join(sandbox, 'mono')
+makeRepo(mono, 'main')
+makeRepo(join(mono, 'packages', 'pkg-x'), 'x-main')
+
+/**
+ * Read the discovery route, tolerating a host that does not answer JSON.
+ *
+ * A route that is not mounted answers the SPA fallback (or, on this bare test
+ * server, nothing at all), so parsing cannot be assumed — the assertion below
+ * should FAIL on that answer rather than throw before it can report.
+ * @param dir - the project directory to ask about.
+ * @returns the status and the parsed body, or a null body.
+ */
+const repoList = async (dir) => {
+  const query = dir === undefined ? '' : `?dir=${encodeURIComponent(dir)}`
+  const response = await fetch(`${origin}/dsh-web-ui/git/repos${query}`)
+  const text = await response.text()
+  return { status: response.status, body: text.trimStart().startsWith('{') ? JSON.parse(text) : null }
+}
+/** The discovered roots, or an empty list when there was no answer to read. */
+const repoRoots = body => (body?.data?.repos ?? []).map(entry => entry.root)
+
+answer = await repoList(nest)
+check('discovery finds every repository under a project that is not one',
+  answer.status === 200 && answer.body?.ok === true && answer.body.data.project === nest
+  && answer.body.data.repos.length === 3, JSON.stringify(repoRoots(answer.body)))
+check('discovery names each repository and its path within the project',
+  JSON.stringify((answer.body?.data?.repos ?? []).map(entry => `${entry.name}:${entry.relPath}`))
+  === JSON.stringify(['pkg-a:pkg-a', 'pkg-b:pkg-b', 'pkg-e:tools/nested/pkg-e']),
+  JSON.stringify((answer.body?.data?.repos ?? []).map(entry => `${entry.name}:${entry.relPath}`)))
+check('discovery orders the shallowest repository first',
+  JSON.stringify(repoRoots(answer.body)) === JSON.stringify([
+    join(nest, 'pkg-a'), join(nest, 'pkg-b'), join(nest, 'tools', 'nested', 'pkg-e'),
+  ]), JSON.stringify(repoRoots(answer.body)))
+// Stated with the three expected roots as a guard: a NEGATIVE assertion over an
+// empty list would pass while discovering nothing at all.
+check('discovery does not descend past its depth cap',
+  repoRoots(answer.body).length === 3
+  && !repoRoots(answer.body).includes(join(nest, 'tools', 'nested', 'deeper', 'pkg-f')),
+  JSON.stringify(repoRoots(answer.body)))
+check('discovery does not walk into node_modules',
+  repoRoots(answer.body).length === 3
+  && !repoRoots(answer.body).includes(join(nest, 'node_modules', 'dep')),
+  JSON.stringify(repoRoots(answer.body)))
+
+// Each candidate has to be a directory the rest of the drawer can actually read,
+// or the switcher would offer a repository that answers nothing.
+const nestBranches = []
+for (const entry of answer.body?.data?.repos ?? []) {
+  const overview = (await get(`/dsh-web-ui/git/overview?dir=${encodeURIComponent(entry.root)}`)).body
+  nestBranches.push(overview?.data?.head?.branch ?? `unreadable:${overview?.error?.code ?? 'no answer'}`)
+}
+check('every discovered repository answers its own overview',
+  JSON.stringify(nestBranches) === JSON.stringify(['alpha', 'beta', 'epsilon']), JSON.stringify(nestBranches))
+
+answer = await repoList(mono)
+// The root is compared through `realpathSync` on purpose: `rev-parse
+// --show-toplevel` answers a REAL path, so on a host whose temp directory is
+// reached through a symlink (macOS `/var` -> `/private/var`) it names the same
+// directory in the other spelling.
+check('a project that IS a repository lists its own repository first',
+  answer.body?.ok === true && answer.body.data.repos.length === 2
+  && realpathSync(answer.body.data.repos[0].root) === realpathSync(mono)
+  && answer.body.data.repos[0].relPath === '.',
+  JSON.stringify([answer.body?.data?.repos?.[0]?.root, answer.body?.data?.repos?.[0]?.relPath]))
+check('a project that IS a repository still lists the repositories nested inside it',
+  repoRoots(answer.body)[1] === join(mono, 'packages', 'pkg-x'), JSON.stringify(repoRoots(answer.body)))
+
+/**
+ * A project holding more repositories than discovery is willing to report, plus
+ * one under a dotted directory. Four-fifths of these are FABRICATED — a `.git`
+ * directory is all discovery looks for, and a real repository each would cost a
+ * commit apiece to prove the same thing about the count.
+ */
+const many = join(sandbox, 'many')
+mkdirSync(join(many, '.hidden', 'pkg-a', '.git'), { recursive: true })
+for (let index = 0; index < 24; index += 1) {
+  mkdirSync(join(many, `pkg-${String(index).padStart(2, '0')}`, '.git'), { recursive: true })
+}
+
+answer = await repoList(many)
+check('discovery stops at its cap rather than walking an enormous tree',
+  answer.body?.ok === true && answer.body.data.repos.length === 20 && answer.body.data.truncated === true,
+  `${String(answer.body?.data?.repos?.length)} repositories, truncated=${String(answer.body?.data?.truncated)}`)
+check('the capped answer is the FIRST twenty, not an arbitrary twenty',
+  repoRoots(answer.body).every((root, index) => root === join(many, `pkg-${String(index).padStart(2, '0')}`)),
+  JSON.stringify(repoRoots(answer.body).slice(-2)))
+check('discovery stays out of dotted directories, which is also what keeps .git out of the walk',
+  repoRoots(answer.body).length === 20
+  && !repoRoots(answer.body).some(root => root.includes(`${join(many, '.hidden')}`)),
+  JSON.stringify(repoRoots(answer.body).slice(0, 1)))
+
+answer = await repoList(bare)
+check('a project with no repository anywhere discovers none — not an error',
+  answer.body?.ok === true && answer.body.data.repos.length === 0, JSON.stringify(repoRoots(answer.body)))
+answer = await repoList('/no/such/place')
+check('discovery names a missing directory as such',
+  answer.status === 200 && answer.body?.error?.code === 'no-directory', answer.body?.error?.message?.slice(0, 48))
+answer = await repoList(undefined)
+check('discovery without a directory is a 400', answer.status === 400 && answer.body?.error?.code === 'bad-request')
+raw = await fetch(`${origin}/dsh-web-ui/git/repos?${DIR}`, { method: 'POST' })
+check('the discovery route answers 405 to a write method', raw.status === 405 && raw.headers.get('allow') === 'GET')
+
 // ── phase 2: the browser half in a real DOM ──────────────────────────────────
 console.log('\n# phase 2 — the drawer in a DOM\n')
 
@@ -631,10 +772,22 @@ const { act } = await import('react')
 const { createRoot } = await import('react-dom/client')
 const h = React.createElement
 const nodeFetch = globalThis.fetch
+/**
+ * Whether the host serves the discovery route. One section below flips this to
+ * `false` to reproduce the state a rebuilt CLIENT meets when the host has not
+ * been restarted yet: the route answers the SPA fallback instead of an envelope.
+ */
+let reposMounted = true
 // The client bundle builds RELATIVE urls, so the stub re-anchors them at the
 // route server this test owns.
 globalThis.fetch = (input, init) => {
   if (typeof input !== 'string' || !input.startsWith('/')) return nodeFetch(input, init)
+  if (!reposMounted && input.startsWith('/dsh-web-ui/git/repos')) {
+    return Promise.resolve(new Response('<!doctype html><html><body>app</body></html>', {
+      status: 200,
+      headers: { 'content-type': 'text/html; charset=utf-8' },
+    }))
+  }
   // Two route servers, one page: the command bar's routes live on their own, as
   // they do in the real host (where they are one server with more rows).
   const base = input.startsWith('/dsh-web-ui/term/') ? domTerminal.origin : origin
@@ -1011,6 +1164,8 @@ check('the Git control reports itself pressed while the drawer is open',
   barButton('Git')?.getAttribute('aria-pressed') === 'true')
 await waitFor(() => q('[data-wui="gitBranchChip"]')?.textContent === 'main', 'the overview read')
 check('the drawer names the repository', q('[data-wui="gitRepoName"]')?.textContent === root.split('/').pop(), q('[data-wui="gitRepoName"]')?.textContent)
+check('a project with ONE repository offers no switcher — a one-item menu is not a choice',
+  q('[data-wui="gitRepoSwitch"]') === null)
 check('the drawer names the current branch', q('[data-wui="gitBranchChip"]')?.textContent === 'main')
 check('the drawer offers four tabs', qa('[data-wui="gitTab"]').map(element => element.textContent.replace(/\d+$/, '')).join(',') === 'Branches,Changes,History,Journal',
   qa('[data-wui="gitTab"]').map(element => element.textContent).join(','))
@@ -1179,6 +1334,99 @@ check('initializing turns the drawer into a working repository drawer',
 check('the freshly initialized repository reports itself as empty',
   q('[data-wui="gitEmptyTitle"]') === null && q('[data-wui="gitDrawer"]') !== null)
 await act(async () => { outsider.unmount() })
+
+
+// ── one project, several repositories ────────────────────────────────────────
+// Discovery's whole point: a project whose packages each hold their own
+// repository must open ON one of them, not on the project directory's own "not a
+// repository" answer. `nest` is the phase-1d fixture: pkg-a, pkg-b, and
+// tools/nested/pkg-e, and nothing else (no node_modules, nothing past the cap).
+const multiRoot = createRoot(container)
+await act(async () => {
+  multiRoot.render(h(bar.component, barProps([{ ...workspaces[0], path: nest }])))
+})
+await settle()
+await click(barButton('Git'))
+// Waited on the BRANCH, not on the name: the name is knowable the moment
+// discovery answers, while the branch is only knowable once the overview of the
+// chosen repository has been read and rendered.
+await waitFor(() => q('[data-wui="gitBranchChip"]')?.textContent === 'alpha', 'the first discovered repository')
+check('a project of several repositories opens on one of them, not on a refusal',
+  q('[data-wui="gitRepoName"]')?.textContent === 'pkg-a' && q('[data-wui="gitEmptyTitle"]') === null,
+  `${q('[data-wui="gitRepoName"]')?.textContent} ${q('[data-wui="gitEmptyTitle"]')?.textContent ?? ''}`)
+check('the drawer reads the branch of the repository it chose',
+  q('[data-wui="gitBranchChip"]')?.textContent === 'alpha', q('[data-wui="gitBranchChip"]')?.textContent)
+
+const switcher = q('[data-wui="gitRepoSwitch"]')
+check('several repositories in one project offer a switcher', switcher !== null)
+await click(switcher)
+const repoOptions = qa('[data-menu-id]')
+check('the switcher lists every repository, in discovery order',
+  JSON.stringify(repoOptions.map(option => option.getAttribute('data-menu-id')))
+  === JSON.stringify([join(nest, 'pkg-a'), join(nest, 'pkg-b'), join(nest, 'tools', 'nested', 'pkg-e')]),
+  repoOptions.map(option => option.getAttribute('data-menu-id')).join(' | '))
+check('the switcher names each repository and where it sits in the project',
+  qa('[data-wui="gitRepoOptionName"]').map(node => node.textContent).join(',') === 'pkg-a,pkg-b,pkg-e'
+  && qa('[data-wui="gitRepoOptionPath"]').map(node => node.textContent).join(',')
+    === 'pkg-a,pkg-b,tools/nested/pkg-e',
+  qa('[data-wui="gitRepoOptionName"]').map(node => node.textContent).join(','))
+
+await click(repoOptions.find(option => option.getAttribute('data-menu-id') === join(nest, 'pkg-b')))
+await waitFor(() => q('[data-wui="gitBranchChip"]')?.textContent === 'beta', 'the switch to pkg-b')
+check('choosing a repository switches the drawer to it',
+  q('[data-wui="gitRepoName"]')?.textContent === 'pkg-b' && q('[data-wui="gitBranchChip"]')?.textContent === 'beta',
+  `${q('[data-wui="gitRepoName"]')?.textContent} ${q('[data-wui="gitBranchChip"]')?.textContent}`)
+await waitFor(() => [...qa('[data-wui="gitRowName"]')].some(node => node.textContent === 'beta'), 'the switched roster')
+check('the other tabs read the repository that is selected, not the one that was',
+  [...qa('[data-wui="gitRowName"]')].some(node => node.textContent === 'beta')
+  && ![...qa('[data-wui="gitRowName"]')].some(node => node.textContent === 'alpha'),
+  qa('[data-wui="gitRowName"]').map(node => node.textContent).join(','))
+
+// Per-repository working state must not follow the switch: a commit message
+// typed for one repository, submitted against another, is a message about the
+// wrong tree — and `run` sends whatever `dir` the drawer currently holds.
+await click(tab('Changes'))
+await waitFor(() => q('[data-wui="gitCommitInput"]') !== null, 'the changes read for pkg-b')
+await type(q('[data-wui="gitCommitInput"]'), 'half typed for pkg-b')
+check('the commit box holds the typed message while the repository stays selected',
+  q('[data-wui="gitCommitInput"]')?.value === 'half typed for pkg-b', q('[data-wui="gitCommitInput"]')?.value)
+await click(q('[data-wui="gitRepoSwitch"]'))
+await click(qa('[data-menu-id]').find(option => option.getAttribute('data-menu-id') === join(nest, 'pkg-a')))
+await waitFor(() => q('[data-wui="gitBranchChip"]')?.textContent === 'alpha', 'the switch back to pkg-a')
+await waitFor(() => q('[data-wui="gitCommitInput"]') !== null, 'the changes read for pkg-a')
+check('a commit message typed for one repository does not follow the switch',
+  q('[data-wui="gitCommitInput"]')?.value === '', q('[data-wui="gitCommitInput"]')?.value)
+
+await click(barButton('Git'))
+await waitFor(() => q('[data-wui="gitDrawer"]') === null, 'the drawer to close')
+await act(async () => { multiRoot.unmount() })
+
+
+// ── a client that is newer than the host ─────────────────────────────────────
+// The plugin's two halves do not reload together: the browser bundle is served
+// from the plugin directory on every page load, while the host half is imported
+// once per `dsh web` process, so a rebuilt client meeting an un-restarted host is
+// an ordinary state. It must cost the operator nothing — discovery answers the
+// SPA fallback, the drawer works on the project directory, and every read it
+// already had keeps working.
+reposMounted = false
+const rootBranch = (await get(`/dsh-web-ui/git/overview?${DIR}`)).body.data.head.branch
+const staleRoot = createRoot(container)
+await act(async () => { staleRoot.render(h(bar.component, barProps(workspaces))) })
+await settle()
+await click(barButton('Git'))
+await waitFor(() => q('[data-wui="gitBranchChip"]')?.textContent === rootBranch, 'the overview read without discovery')
+check('a drawer whose discovery route is missing still reads the project directory',
+  q('[data-wui="gitRepoName"]')?.textContent === 'repo'
+  && q('[data-wui="gitBranchChip"]')?.textContent === rootBranch
+  && q('[data-wui="gitEmptyTitle"]') === null,
+  `${q('[data-wui="gitRepoName"]')?.textContent} ${q('[data-wui="gitBranchChip"]')?.textContent}`)
+check('and offers no switcher, because it knows of no other repository',
+  q('[data-wui="gitRepoSwitch"]') === null)
+await click(barButton('Git'))
+await waitFor(() => q('[data-wui="gitDrawer"]') === null, 'the drawer to close')
+await act(async () => { staleRoot.unmount() })
+reposMounted = true
 
 // ── the bar carries only the Git control ─────────────────────────────────────
 // The right-panel and terminal controls were built and then removed at the

@@ -175,6 +175,9 @@ export const zh = {
   'git.notRepo': '{path} 不是 git 仓库。',
   'git.notRepo.hint': '项目指向的文件夹需要是一个 git 仓库，或者是仓库里的子目录。',
   'git.notRepo.pick': '切换项目',
+  'git.repo.switch': '切换仓库',
+  'git.repo.menu': '这个项目里的 git 仓库（{n}）',
+  'git.repo.truncated': '还有更多仓库没有列出',
   'bar.aria': '面板操作栏',
   // The account dock at the column's bottom-left corner, and the drawer it opens
   // (see AccountDock.tsx). The identity row's own words belong to the plugin
@@ -575,6 +578,9 @@ export const en = {
   'git.notRepo': '{path} is not a git repository.',
   'git.notRepo.hint': 'The project folder must be a git repository, or a directory inside one.',
   'git.notRepo.pick': 'Switch project',
+  'git.repo.switch': 'Switch repository',
+  'git.repo.menu': 'Git repositories in this project ({n})',
+  'git.repo.truncated': 'More repositories are not listed',
   'bar.aria': 'Panel controls',
   'account.aria': 'Account and settings',
   'account.menu': 'Account menu',

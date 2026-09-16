@@ -145,6 +145,20 @@ export function GitChanges({ dir, t, token, run, confirm, overview }: GitChanges
     setPatchError(null)
   }, [token])
 
+  // A different `dir` is a different REPOSITORY — the drawer's switcher, not
+  // just another read. Everything typed or opened here names something in the
+  // checkout that is no longer selected: the half-written commit message would
+  // be committed against the new one (the commit button sends whatever `dir` the
+  // tab now holds), and the expanded path would report "no such file" about a
+  // path the operator never clicked in this repository.
+  useEffect(() => {
+    setMessage('')
+    setStashMessage('')
+    setExpanded(null)
+    setPatch(null)
+    setPatchError(null)
+  }, [dir])
+
   /**
    * Expand or collapse one row's patch.
    * @param key - the path and the side to show.
