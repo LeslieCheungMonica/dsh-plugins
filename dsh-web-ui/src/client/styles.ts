@@ -9,7 +9,10 @@
  *    conversation and workspace surfaces keep their own CSS). The `html body`
  *    selectors are load-bearing: ui-theme declares the same properties on
  *    `body` / `body[data-ds-dark-theme]`, and an extra type selector wins the
- *    cascade regardless of which stylesheet landed last.
+ *    cascade regardless of which stylesheet landed last. ONE rule in this layer
+ *    is not a token — the session header's reservation at its end, which asks
+ *    for SPACE rather than restyling, the one thing a surface we do not own
+ *    cannot be asked for through a token. See its own comment.
  *
  * 2. `SHELL` — this plugin's own column, marked with `data-wui` attributes and
  *    `wui-` class names. Everything here is owned by this plugin, so it may use
@@ -83,6 +86,30 @@ html body[data-ds-dark-theme] {
   --dsh-web-ui-stage-live-text: var(--dsw-static-green-400);
   --dsh-web-ui-stage-idle: rgba(255, 255, 255, 0.4);
   --dsh-web-ui-stage-idle-soft: rgba(255, 255, 255, 0.22);
+}
+
+/* The session header yields the corner to whatever is docked in it.
+
+   The corner belongs to better-sidebar while that plugin is on the page, and
+   its own stylesheet already pushes the header's right-hand utilities clear of
+   its toggle cluster (\`padding-right: 78px\`, keyed on the body attribute its
+   client half sets while its panel is closed). This plugin's action row now
+   sits in that same corner, immediately left of the cluster, so the same
+   reservation has to clear the ROW too — without it the row's new position
+   would put the Git control on top of the session-log capsule (they overlap by
+   46px at a 1440px viewport).
+
+   The selector repeats that plugin's shape with the extra \`html\` type selector
+   this layer uses everywhere, which makes it win wherever the two stylesheets
+   land in the document. Being a superset of theirs by construction, it is only
+   ever matched when the cluster is there — and when our row has joined it.
+
+   \`--dsh-web-ui-bar-width\` is the row's own width; the fallback is the row with
+   Git alone (54.4px as measured at a 1440px viewport, plus slack). A deployment
+   that grows the strip — a peer rendering more controls into \`shell.action\` —
+   raises that property instead of having its last control sit under the header. */
+html body[data-dsh-sidebar-collapsed] [data-slot='conversation.session.header'] > header {
+  padding-right: calc(78px + var(--dsh-web-ui-bar-width, 65px) + 8px);
 }
 `
 
@@ -384,19 +411,27 @@ const SHELL = `
    state this plugin renders. ONE STEP is the FIRST stage, not zero: sitting on
    stage one is one step of the flow, done. These are per-step rules because the
    flow's LENGTH is a fact this stylesheet has to know (see STAGE_COUNT in
-   stage.ts): adding a stage means adding a row here and re-fractioning the rest. */
+   stage.ts): adding a stage means adding a row here and re-fractioning the rest.
+   The fallback is 0% for the one state that has no step at all — see the
+   data-pending rule below. */
 [data-wui='stageRing'] {
   flex: none;
   width: 16px;
   height: 16px;
   border-radius: 50%;
   background: conic-gradient(
-    var(--dsw-alias-state-success-primary) var(--wui-stage-fill, 16.667%),
+    var(--dsw-alias-state-success-primary) var(--wui-stage-fill, 0%),
     var(--dsh-web-ui-stage-idle) 0
   );
   -webkit-mask: radial-gradient(circle closest-side, transparent 72%, #000 76%);
   mask: radial-gradient(circle closest-side, transparent 72%, #000 76%);
 }
+
+/* The node is the HOST's, so there is a moment — on every mount, and on every
+   project switch — where this tag does not yet know where the project stands, and
+   a failure where it never learns. There is no step to draw then, so the ring is
+   empty rather than showing a share nobody established. */
+[data-wui='stageTag'][data-pending='true'] [data-wui='stageRing'] { --wui-stage-fill: 0%; }
 
 [data-wui='stageTag'][data-step='0'] [data-wui='stageRing'] { --wui-stage-fill: 14.286%; }
 [data-wui='stageTag'][data-step='1'] [data-wui='stageRing'] { --wui-stage-fill: 28.571%; }
@@ -511,6 +546,63 @@ const SHELL = `
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+
+/* Why nothing in the flow can be moved — the node is unread, unreadable, or no
+   project is selected. The same card the folder notice uses: the warn WASH is the
+   signal, the border carries the emphasis, and the words stay the primary label
+   colour. The warn LABEL colour on this wash measures 2.58:1, which is why it is
+   not what the text is painted in (see the contrast assertions in
+   measure-stage-tag.mjs — they are what caught it). */
+[data-wui='stagePanelState'] {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 0 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--dsw-alias-state-warn-primary);
+  border-radius: 8px;
+  background: var(--dsw-alias-state-warn-tertiary);
+  color: var(--dsw-alias-label-primary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* What the HOST said about the last move it refused. The same shape as the state
+   line, one step quieter: it reports something that already happened, rather than
+   something that cannot happen now. */
+[data-wui='stageNotice'] {
+  margin: 0 0 6px;
+  padding: 6px 8px;
+  border-left: 2px solid var(--dsw-alias-state-warn-primary);
+  border-radius: 0 8px 8px 0;
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* Asking again is the one action this panel offers while the node is unknown, so
+   it is a small quiet control inside the state card rather than a second primary
+   button — the tag's column has exactly one filled control and it is not this one.
+   Transparent, like the gate dialog's own retry: the card behind it is already
+   carrying the colour. It never shrinks, because the sentence beside it is the
+   long one. */
+[data-wui='stageRetry'] {
+  flex: none;
+  padding: 2px 8px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+[data-wui='stageRetry']:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
 }
 
 [data-wui='stageList'] {
@@ -3012,20 +3104,39 @@ const SHELL = `
 
 /* ── action row ──────────────────────────────────────────────────────── */
 
-/* One always-on strip of controls, at the conversation header's right and ABOVE
-   its hairline.
+/* One always-on strip of controls, in the viewport's top-right corner.
 
-   The line the reader pointed at is ui-conversation's own: the header paints a
-   1px ::after at bottom: 1px, which lands at y=74 at this frame's header
-   height (12px top padding + a 32px title row + a 27px tab row). The row is 26px
-   tall at top 40px, so its bottom is 66px — all of it above the line, where
-   before the Git control straddled it (52…78) and the panel toggles sat under it
-   (88…114).
+   While better-sidebar is on the page the row JOINS its toggle cluster: the
+   same band, immediately left of its round toggles, so the corner reads as one
+   row — [Git] [bottom panel] [sidebar] — instead of two stacks at
+   the same corner. A reader asked for exactly this, and the two stacks really did
+   collide: the 26px pill at top 40 and the cluster at top 3 overlap
+   horizontally by 46px.
 
-   All three offsets are custom properties, so a deployment can move or clear the
-   row without touching these rules:
-     --dsh-web-ui-bar-top     the row's top edge (default 40px)
-     --dsh-web-ui-bar-right   its inset from the viewport's right edge (24px)
+   The cluster's geometry is that plugin's own and is not ours to lay out (see
+   the corner rules below): it is \`position: absolute\` inside a host it appends
+   to \`document.body\`, at top 3px / right 10px, with 28px buttons and a 4px gap
+   — two of them on viewports ≥ 768px, one below. So the defaults here MIRROR
+   it: a 26px pill sharing the toggles' centre line sits at top 4px (3 + the
+   1px height difference), and the row's inset is the corner (10) + the
+   cluster's width (60, or 28 narrow) + an 8px gap. That arithmetic is the one
+   thing this corner cannot do mechanically — a fixed element cannot ask
+   another how wide it is — so it is duplicated deliberately, from
+   dsh-better-sidebar's \`src/client/sidebar.module.css\`, and it is the pair of
+   numbers to revisit if that plugin ever moves its cluster.
+
+   With no cluster on the page the row keeps the geometry it has always had:
+   26px tall at top 40px, its bottom edge at 66px — above the 1px hairline
+   ui-conversation paints at y=74 (12px top padding + a 32px title row + a 27px
+   tab row), where the row used to sit to stay clear of that line.
+
+   The offsets are custom properties, so a deployment can move or clear the row
+   without touching these rules:
+     --dsh-web-ui-bar-top     the row's top edge (40px, or 4px while the row is
+                              joined to the corner cluster)
+     --dsh-web-ui-bar-right   its inset from the viewport's right edge (24px, or
+                              78px joined — 46px below that plugin's own 768px
+                              breakpoint, where its cluster holds one toggle)
      --dsh-web-ui-bar-shift   space RESERVED to its right, added to the inset.
                               A docked panel that covers the corner (my-sider's
                               sidebar) writes this while it is open, so the whole
@@ -3034,8 +3145,8 @@ const SHELL = `
                               pushed it aside. */
 [data-wui='actionBar'] {
   position: fixed;
-  top: var(--dsh-web-ui-bar-top, 40px);
-  right: calc(var(--dsh-web-ui-bar-right, 24px) + var(--dsh-web-ui-bar-shift, 0px));
+  top: var(--dsh-web-ui-bar-top, var(--dsh-web-ui-bar-top-corner, 40px));
+  right: calc(var(--dsh-web-ui-bar-right, var(--dsh-web-ui-bar-right-corner, 24px)) + var(--dsh-web-ui-bar-shift, 0px));
   z-index: 1;
   display: flex;
   align-items: center;
@@ -3048,6 +3159,30 @@ const SHELL = `
 
 @media (prefers-reduced-motion: reduce) {
   [data-wui='actionBar'] { transition: none; }
+}
+
+/* The corner join: while better-sidebar's toggle cluster is on the page, the
+   row's defaults become that cluster's band. \`:has()\` states it as a fact about
+   the PAGE — the cluster is appended to \`document.body\` by the plugin that owns
+   it, so its presence is readable from CSS and needs no flag for a deployment
+   to keep in sync.
+
+   The two values land on \`*-corner\` names rather than on the documented knobs,
+   and the base rule reads them as its inner fallback. That ordering is the
+   point: a deployment that sets --dsh-web-ui-bar-top / --dsh-web-ui-bar-right
+   still wins, because those are read BEFORE the corner default is. */
+html body:has([data-dsh-toggle-cluster]) {
+  --dsh-web-ui-bar-top-corner: calc(4px + env(safe-area-inset-top));
+  --dsh-web-ui-bar-right-corner: 78px;
+}
+
+/* Below that plugin's own narrow breakpoint (its NARROW_MAX_WIDTH = 768, whose
+   paired CSS is exactly this query) the cluster holds one toggle instead of
+   two, so the corner it occupies is 28px narrower. */
+@media (max-width: 767px) {
+  html body:has([data-dsh-toggle-cluster]) {
+    --dsh-web-ui-bar-right-corner: 46px;
+  }
 }
 
 [data-wui='actionButton'] {

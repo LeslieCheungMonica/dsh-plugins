@@ -16,13 +16,17 @@
  *    and has to land exactly on the node centres, and the portaled panel has to
  *    stay inside the viewport. A screenshot shows neither numerically.
  *
- * The page is SERVED over HTTP (a `file://` origin refuses `localStorage`, and
- * the tag's stage lives there), and each scenario seeds that stage before the
- * component first renders — through the app's own storage key, so the tag reads
- * it exactly as it reads a stage recorded by an earlier session.
+ * The page is SERVED over HTTP, and this script plays the whole host the tag now
+ * needs: the FDE node lives on the project's RECORD (`src/host/projects.ts`), so
+ * the server below answers `GET /project` with a record standing at whatever node
+ * a scenario seeds, accepts `POST /project/stage` as a move, and keeps the record
+ * it answered with. A scenario therefore seeds the HOST, not the browser — which is
+ * the point of the change this script was updated for, and it is why the two
+ * scenarios at the end are about the browser's OLD note: it must still be able to
+ * register a node the host has none of, and must never outweigh one the host has.
  *
  * That server also answers the STAGE GATE's two routes (`gateAnswer` /
- * `confirmAnswer` below), because the gate's verdict arrives from a host: a
+ * `confirmAnswer` below), because the gate's verdict arrives from a host too: a
  * preview that could not answer them would only ever exercise the refusal path,
  * while the pass, the block and the manual answer are all part of the contract
  * this script pins down.
@@ -34,6 +38,7 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { STAGE_COUNT, STAGE_KEYS, stageStateAt } from '../../src/client/stage.ts'
+import { FLOW_STAGE_IDS, nextStageId, stageAt } from '../../src/shared/stageflow.ts'
 import { zh } from '../../src/client/locales.ts'
 import { decodePng, isGreen } from './pixel.mjs'
 
@@ -163,12 +168,80 @@ function report(input) {
   }
 }
 
-// A one-page server on an ephemeral port: the tag's stage is stored through
-// localStorage, which needs a real origin.
+// A one-page server on an ephemeral port. It plays the whole host: the FDE node
+// lives on the project's record, which is READ before anything renders and
+// WRITTEN by every move — so the seeding a scenario does is a server-side fact,
+// and what the tag shows afterwards is this server's answer.
+//
+// `hostedNode` is the record's node: an id, or null for "nothing recorded yet"
+// (which is what a browser's old note is allowed to register — see scenario 7).
+// Every scenario that cares sets it through `serve()` before navigating.
+let hostedNode = null
+/** Every move the page asked for, in order: what the tag's writes were. */
+const moves = []
+/** When set, every API route answers a plain-text 500: a host half that is not there. */
+let hostDown = false
+/** When set, the next move is REFUSED, the way a stale page's move is. */
+let refuseMove = false
+/** The path the preview's columns are scoped to (see `stage-tag-entry.tsx`). */
+const PREVIEW_PATH = '/tmp/dsh-web-ui-preview/订单中心重构'
+
+/** The record this server holds, as `GET /project` answers it. */
+function hostedRecord() {
+  return {
+    name: '订单中心重构',
+    path: PREVIEW_PATH,
+    stage: hostedNode,
+    background: 'existing',
+    productCardId: 'card-fde',
+    larkFolderToken: '',
+    larkFolderUrl: '',
+    updatedAt: 1,
+  }
+}
+
 const server = createServer((request, response) => {
   if (request.url === '/' || request.url === '/index.html') {
     response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
     response.end(html)
+    return
+  }
+  if (hostDown) {
+    response.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' })
+    response.end('host unavailable')
+    return
+  }
+  if (request.url?.startsWith('/dsh-web-ui/lark/project/stage') === true && request.method === 'POST') {
+    let body = ''
+    request.on('data', (chunk) => { body += String(chunk) })
+    request.on('end', () => {
+      const asked = JSON.parse(body)
+      moves.push(asked)
+      if (refuseMove) {
+        // What the real host answers a move that is no longer the next one. The
+        // record travels back with it, so the page never has to guess.
+        response.writeHead(409, { 'content-type': 'application/json; charset=utf-8' })
+        response.end(JSON.stringify({
+          ok: false,
+          error: {
+            code: 'not-next',
+            message: `the FDE flow moves one node at a time: from \`${hostedNode ?? 'none'}\` the only node it may enter is \`${nextStageId(hostedNode ?? 'requirement') ?? 'none'}\``,
+          },
+          project: hostedRecord(),
+        }))
+        return
+      }
+      // The real host judges the move; what this script needs is the tag's own
+      // behaviour around an answer, so an accepted move is simply recorded.
+      hostedNode = asked.stage
+      response.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+      response.end(JSON.stringify({ ok: true, project: hostedRecord() }))
+    })
+    return
+  }
+  if (request.url?.startsWith('/dsh-web-ui/lark/project') === true) {
+    response.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+    response.end(JSON.stringify({ ok: true, project: hostedRecord() }))
     return
   }
   if (request.url?.startsWith('/dsh-web-ui/stage-gate/check') === true) {
@@ -226,30 +299,73 @@ const browser = await playwright.chromium.launch(EXECUTABLE === undefined ? {} :
 const problems = []
 
 /**
- * Open the preview with a stage already recorded for both columns.
- * @param stage - the stage index to seed.
+ * Open the preview with the HOST standing at a given node.
+ * @param stage - the node index to seed the project's record with.
  * @returns the page, with the preview loaded.
  */
 async function open(stage) {
-  return openRaw(JSON.stringify({ 'demo-wide': stage, 'demo-rail': stage }))
+  return openRaw(null, stage)
 }
 
 /**
- * Open the preview with an arbitrary raw document in the tag's storage slot.
- * @param document - the exact string to store under the app's own key.
+ * Open the preview with a given host record and/or a browser note.
+ *
+ * Both halves are parameters because the two are independent facts now: the host
+ * holds where the project IS, and this browser may hold a leftover of where it
+ * used to think it was. The scenarios at the end are exactly about which of them
+ * wins.
+ * @param document - the raw string to store under the browser's OLD key, or null.
+ * @param stage - the node index the host's record stands at, or null for "none".
+ * @param options - `settle: false` for a scenario where the read never lands, and
+ * the two host faults the last scenarios script.
  * @returns the page, with the preview loaded.
  */
-async function openRaw(document) {
+async function openRaw(document, stage = null, options = {}) {
+  const { settle = true, down = false, refuse = false } = options
+  moves.length = 0
+  hostedNode = stage === null ? null : (stageAt(stage) ?? FLOW_STAGE_IDS[0])
+  hostDown = down
+  refuseMove = refuse
   const page = await browser.newPage({ viewport: { width: 1100, height: 800 } })
   page.on('pageerror', error => { problems.push(`pageerror: ${error.message}`) })
   page.on('console', (message) => {
-    if (message.type() === 'error') problems.push(`console.error: ${message.text()}`)
+    if (message.type() !== 'error') return
+    // The last two scenarios script a host that FAILS: a 500 for the read and a 409
+    // for the move. Chromium logs every 4xx/5xx as a console error, so those are
+    // the answers under test rather than problems with the page — and they are
+    // excused ONLY while one of those faults is scripted, so a 5xx from anywhere
+    // else still fails the run.
+    if ((hostDown || refuseMove) && message.text().includes('Failed to load resource')) return
+    problems.push(`console.error: ${message.text()}`)
   })
-  await page.addInitScript((stored) => {
-    window.localStorage.setItem('dsh-web-ui.fde-stage', stored)
-  }, document)
+  if (document !== null) {
+    await page.addInitScript((stored) => {
+      window.localStorage.setItem('dsh-web-ui.fde-stage', stored)
+    }, document)
+  }
   await page.goto(origin, { waitUntil: 'load' })
+  // The node is a round trip now, so the first paint is deliberately node-less:
+  // every scenario waits for the read to land before reading the page.
+  if (settle) await settleNode(page)
   return page
+}
+
+/**
+ * Wait until a tag is no longer claiming that it has not read a node.
+ *
+ * The read is a round trip to the host, so every look at the page has to wait for
+ * it — otherwise a scenario measures the one state the tag is in while it knows
+ * nothing, which is a state of its own (and asserted as one). The scope matters
+ * when only ONE column was acted on: the preview renders two, and a retry in the
+ * expanded column says nothing about the rail's own tag.
+ * @param page - the page to wait on.
+ * @param scope - a selector prefix, or `''` for every tag on the page.
+ */
+async function settleNode(page, scope = '') {
+  await page.waitForFunction((prefix) => {
+    const tags = [...document.querySelectorAll(`${prefix}[data-wui="stageTag"]`)]
+    return tags.length > 0 && tags.every(tag => tag.dataset['pending'] !== 'true')
+  }, scope, { timeout: 5000 })
 }
 
 /**
@@ -373,6 +489,9 @@ function readState() {
     },
     tag: {
       step: tag.dataset['step'],
+      // Whether the tag is still claiming NO node: the read is a round trip, and
+      // the moment before it lands is one an operator sees on every switch.
+      pending: tag.dataset['pending'] === 'true',
       label: tag.querySelector('[data-wui="stageTagLabel"]')?.textContent ?? null,
       count: tag.querySelector('[data-wui="stageTagCount"]')?.textContent ?? null,
       ariaLabel: tag.getAttribute('aria-label'),
@@ -386,12 +505,21 @@ function readState() {
       title: panel.querySelector('[data-wui="stagePanelTitle"]').textContent,
       scope: panel.querySelector('[data-wui="stagePanelScope"]').textContent,
       count: panel.querySelector('[data-wui="stagePanelCount"]').textContent,
+      // Why nothing can be moved, when nothing can be, and what the host said
+      // about the last move: both are lines of the panel rather than tooltips.
+      state: panel.querySelector('[data-wui="stagePanelState"]')?.textContent ?? null,
+      retry: panel.querySelector('[data-wui="stageRetry"]') !== null,
+      notice: panel.querySelector('[data-wui="stageNotice"]')?.textContent ?? null,
       fill: getComputedStyle(panel).backgroundColor,
       inViewport: panelBox.top >= 0 && panelBox.left >= 0
         && panelBox.bottom <= window.innerHeight && panelBox.right <= window.innerWidth,
       gapBelowTag: Math.round(panelBox.top - tagBox.bottom),
       leftOfTag: Math.round(panelBox.left - tagBox.left),
     },
+    // The browser's OLD key, read back on purpose: the migration must be able to
+    // happen twice (a registration that failed has to be retried) and must never be
+    // preferred to the host's own record, so what is left here is part of the
+    // contract rather than debris.
     stored: window.localStorage.getItem('dsh-web-ui.fde-stage'),
     // Where the column's own controls sit: the panel is an overlay, so opening
     // it must not move anything in the column.
@@ -480,6 +608,26 @@ function contrast(foreground, background) {
 function toRgb(css) {
   const [r, g, b] = (css.match(/[\d.]+/g) ?? []).map(Number)
   return { r, g, b }
+}
+
+/**
+ * The colour a translucent fill is actually painted in.
+ *
+ * The plugin's tints are WASHES: a "tertiary" state colour or a hover overlay is a
+ * semi-transparent layer over whatever is beneath it, so the value
+ * `getComputedStyle` reports is a colour nothing on screen ever has. Reading the
+ * wash as if it were opaque measures the wrong pixel — in both directions — which
+ * is why this composition exists rather than a direct `contrast(fill, surface)`.
+ * @param fill - the element's own computed background.
+ * @param surface - the opaque colour behind it.
+ * @returns an opaque `rgb(...)` string: what the words actually sit on.
+ */
+function overSurface(fill, surface) {
+  const parse = css => (css.match(/[\d.]+/g) ?? []).map(Number)
+  const back = parse(surface)
+  const front = parse(fill)
+  const alpha = front[3] ?? 1
+  return `rgb(${[0, 1, 2].map(index => Math.round(front[index] * alpha + back[index] * (1 - alpha))).join(', ')})`
 }
 
 /** The colour a row paints behind its own words. */
@@ -715,8 +863,15 @@ function checkModel(name, stage, data) {
       JSON.stringify(after.rows.map(row => row.state))
         === JSON.stringify(STAGE_KEYS.map((_, index) => stageStateAt(index, to))),
       after.rows.map(row => row.state).join(', '))
-    check('the click is persisted, so a reload keeps the stage',
-      JSON.parse(after.stored)['demo-wide'] === to, after.stored)
+    // A reload is the honest reading of "persisted" now, and this is the property
+    // the whole host-side change exists for: the node survives the page, and the
+    // page holds nothing of its own to fall back on.
+    await page.reload({ waitUntil: 'load' })
+    await settleNode(page)
+    const kept = await page.evaluate(readState)
+    check('the click is persisted, so a reload keeps the node',
+      kept.tag.step === String(to) && moves.at(-1)?.stage === stageAt(to),
+      `step ${kept.tag.step} / last move ${JSON.stringify(moves.at(-1))}`)
 
     // The move disabled the row that held the keyboard (it is locked now), so focus
     // must have been handed to the row the project moved TO — and re-placing the
@@ -891,7 +1046,7 @@ function checkModel(name, stage, data) {
     JSON.stringify(confirmRequests))
   check('and only then does the stage move, with the dialog out of the way',
     entered.tag.step === '1' && entered.gate === null
-      && JSON.parse(entered.stored)['demo-wide'] === 1
+      && moves.at(-1)?.stage === stageAt(1)
       && entered.panel !== null,
     `step ${entered.tag.step}, gate ${entered.gate === null ? 'closed' : 'open'}`)
 
@@ -1007,7 +1162,7 @@ function checkModel(name, stage, data) {
   }))
   check('Escape closes the dialog and moves nothing: the stage is where it was',
     opened.gate !== null && dismissed.gate === null && dismissed.tag.step === '0'
-      && JSON.parse(dismissed.stored)['demo-wide'] === 0 && confirmRequests.length === 0,
+      && moves.length === 0 && confirmRequests.length === 0,
     `step ${dismissed.tag.step}, ${confirmRequests.length} write(s)`)
   check('closing hands the keyboard back to the row the dialog was opened from, and the panel is still there',
     dismissed.panel !== null && focused.text?.startsWith(zh[STAGE_KEYS[1]]) === true && focused.locked === null,
@@ -1107,6 +1262,7 @@ function checkModel(name, stage, data) {
   // re-seeded one step earlier so the click is a real move rather than a no-op.
   {
     const approach = await open(stage - 1)
+
     await approach.click(`${WIDE}[data-wui="stageTag"]`)
     await approach.waitForTimeout(250)
     await clickNode(approach, stage)
@@ -1115,7 +1271,7 @@ function checkModel(name, stage, data) {
     check('the terminal node is entered by the same one step, ungated, and persisted',
       arrived.tag.step === String(stage) && arrived.tag.label === zh['stage.done']
         && arrived.tag.count === `${STAGE_COUNT}/${STAGE_COUNT}`
-        && arrived.gate === null && JSON.parse(arrived.stored)['demo-wide'] === stage,
+        && arrived.gate === null && moves.at(-1)?.stage === stageAt(stage),
       `step ${arrived.tag.step}, ${arrived.tag.label}, ${arrived.tag.count}`)
     await approach.close()
   }
@@ -1291,39 +1447,155 @@ function checkModel(name, stage, data) {
   await page.close()
 }
 
-/* ── scenario 7: a record this plugin cannot trust ─────────────────────────
-   The stage is the operator's own note, and a note is occasionally garbage: a
-   truncated write, a value from a version that had more stages, a hand-edited
-   document. None of that may take the column down, and the NEXT click must be
-   able to write a clean record — so both halves are asserted here. */
+/* ── scenario 7: the browser's OLD note, and the host ──────────────────────
+   The node used to be one browser's own note. It is the host's record now, and
+   the old key is read for exactly one purpose: to REGISTER a node the host has
+   none of, so an operator mid-delivery when the change landed does not lose their
+   place. What must never happen is the other direction — a stale note outweighing
+   the record — and neither arm may take the column down. */
 
 {
-  const page = await openRaw(JSON.stringify({ 'demo-wide': 99, 'demo-rail': -1 }))
-  const clamped = await page.evaluate(() => [...document.querySelectorAll('[data-wui="stageTag"]')]
+  // Nothing recorded on the host, and this browser says 测试环境验收 (node 3): the
+  // note is the first registration, and the tag shows what the host answered.
+  const page = await openRaw(JSON.stringify({ 'demo-wide': 3, 'demo-rail': 3 }), null)
+  const migrated = await page.evaluate(() => [...document.querySelectorAll('[data-wui="stageTag"]')]
     .map(tag => tag.dataset['step']))
-  check('a stored stage outside the flow is clamped rather than rendered',
-    clamped.join(',') === `${STAGE_COUNT - 1},0`, clamped.join(', '))
+  check('a node this browser held is registered with the host, and then shown',
+    migrated.join(',') === '3,3' && moves.length === 2 && moves.every(move => move.stage === 'test'),
+    `${migrated.join(', ')} / ${JSON.stringify(moves)}`)
+  // Left in place on purpose: a registration the host never received has to be
+  // retryable, and nothing reads the key once the host holds a node.
+  const kept = await page.evaluate(() => window.localStorage.getItem('dsh-web-ui.fde-stage'))
+  check('the browser\'s old note is kept, so a failed registration can happen again',
+    kept === JSON.stringify({ 'demo-wide': 3, 'demo-rail': 3 }), String(kept))
   await page.close()
 }
 
 {
-  const page = await openRaw('{ this is not json')
+  // The host HAS a node — 上线验收 (node 5) — while this browser's note says 代码开发与自测
+  // (node 2). The host wins, and the stale note is not even offered to it.
+  const page = await openRaw(JSON.stringify({ 'demo-wide': 2, 'demo-rail': 2 }), 5)
+  const shown = await page.evaluate(() => [...document.querySelectorAll('[data-wui="stageTag"]')]
+    .map(tag => tag.dataset['step']))
+  check('a host record outweighs the browser\'s old note',
+    shown.join(',') === '5,5' && moves.length === 0, `${shown.join(', ')} / ${JSON.stringify(moves)}`)
+  await page.close()
+}
+
+{
+  // An unreadable note and a host with no record: nothing is registered (there is
+  // nothing to register), and the flow's first node stands for a project nobody
+  // has placed — without an error, and without a write.
+  const page = await openRaw('{ this is not json', null)
   const step = await page.evaluate(() => document.querySelector('[data-wui="stageTag"]').dataset['step'])
-  check('an unreadable record falls back to the first stage, without an error',
-    step === '0' && problems.length === 0, `step ${step}, ${problems.length} page problems`)
+  check('an unreadable note registers nothing and falls back to the first node',
+    step === '0' && moves.length === 0 && problems.length === 0,
+    `step ${step}, ${String(moves.length)} moves, ${String(problems.length)} page problems`)
   await page.click(`${WIDE}[data-wui="stageTag"]`)
-  // The next stage from the clamped first one, whose gate this scenario answers:
-  // a repaired record must be able to take the flow's FIRST step — which now means
-  // the dialog's own two steps, the gate check and the human answer.
+  // The next node from the first one, whose gate this scenario answers: a repaired
+  // flow must be able to take its FIRST step — which means the dialog's own two
+  // steps, the gate check and the human answer.
   gateAnswer = report({ status: 'passed', items: [item('requirement-analysis'), item('feature-list'), item('html-demo')] })
   await clickNode(page, 1)
   await page.waitForTimeout(250)
   await answerManual(page, 'yes')
   await page.click('[data-wui="gateEnter"]')
   await page.waitForTimeout(250)
-  const repaired = await page.evaluate(() => window.localStorage.getItem('dsh-web-ui.fde-stage'))
-  check('the next click writes a clean record over the unreadable one',
-    JSON.parse(repaired)['demo-wide'] === 1, repaired)
+  // ONE move, from the column that was clicked: the rail column's note is the same
+  // garbage, so it registers nothing either, and it was never clicked.
+  check('the next click records a node the host did not have',
+    moves.length === 1
+    && moves[0].stage === 'design'
+    && moves[0].path === PREVIEW_PATH
+    && moves[0].name === '订单中心重构',
+    JSON.stringify(moves))
+  await page.close()
+}
+
+/* ── scenario 8: a node that cannot be read, and a move that is refused ─────
+   Two states the tag could not have before the node lived on the host, and the
+   two where a page that guessed would be lying: a read that never lands, and a
+   move the host turned down. Neither may be drawn as a position. */
+
+{
+  const page = await openRaw(null, null, { down: true, settle: false })
+  // The read has FAILED once the panel has a state line to show, which is the only
+  // signal available: a tag that cannot read is indistinguishable from one still
+  // reading by its own attributes, and deliberately so (see StageTag.tsx).
+  await page.click(`${WIDE}[data-wui="stageTag"]`)
+  await page.waitForSelector('[data-wui="stagePanelState"]', { timeout: 5000 })
+  await page.waitForTimeout(300)
+  const down = await page.evaluate(readState)
+  check('a node that cannot be read claims no node at all',
+    down.tag.pending === true && down.tag.step === undefined,
+    `${String(down.tag.step)} / pending ${String(down.tag.pending)}`)
+  check('a node that cannot be read says so, rather than drawing the first node',
+    (down.panel?.state ?? '').includes(zh['stage.read.failed'].split('：')[0]),
+    String(down.panel?.state))
+  check('with no node to stand on, every row of the flow is inert',
+    down.rows.length === STAGE_COUNT && down.rows.every(row => row.disabled && row.locked),
+    `${String(down.rows.filter(row => !row.disabled).length)} movable row(s)`)
+  check('an empty ring, not a share nobody established',
+    down.tag.ringFill === '0%', down.tag.ringFill)
+  check('the failed read offers the one action that can help',
+    down.panel?.retry === true, String(down.panel?.retry))
+  const legible = await page.evaluate(() => {
+    const state = document.querySelector('[data-wui="stagePanelState"]')
+    return {
+      color: getComputedStyle(state).color,
+      fill: getComputedStyle(state).backgroundColor,
+      surface: getComputedStyle(document.querySelector('[data-wui="stagePanel"]')).backgroundColor,
+    }
+  })
+  check('why nothing can move is readable (>= 4.5:1, WCAG AA)',
+    contrast(legible.color, overSurface(legible.fill, legible.surface)) >= 4.5,
+    JSON.stringify(legible))
+  await page.screenshot({ path: new URL('./stage-tag-unreadable.png', import.meta.url).pathname })
+
+  // The host answers again, standing at 测试环境验收: the retry is what asks it.
+  hostDown = false
+  hostedNode = stageAt(3)
+  await page.click('[data-wui="stageRetry"]')
+  await settleNode(page, WIDE)
+  const recovered = await page.evaluate(readState)
+  check('retrying reads the node the host holds once it answers',
+    recovered.tag.step === '3' && recovered.tag.label === zh['stage.test']
+    && recovered.panel?.state === null,
+    `step ${String(recovered.tag.step)} / ${String(recovered.tag.label)}`)
+  await page.close()
+}
+
+{
+  // The move is refused because the project moved UNDER this page. The tag must
+  // end up showing where the host says it is — with the reason next to the flow.
+  const page = await openRaw(null, 5, { refuse: true })
+  await page.click(`${WIDE}[data-wui="stageTag"]`)
+  await page.waitForTimeout(250)
+  // The project moved under this page — another operator, another tab — so the move
+  // it is about to ask for is no longer the next one, and the host says so.
+  hostedNode = 'test'
+  await clickNode(page, STAGE_COUNT - 1)
+  await page.waitForTimeout(400)
+  const refused = await page.evaluate(readState)
+  check('a refused move puts the tag where the host says the project is',
+    refused.tag.step === '3' && refused.tag.label === zh['stage.test'],
+    `step ${String(refused.tag.step)} / ${String(refused.tag.label)}`)
+  check('a refused move is explained in the panel, quoting the host',
+    (refused.panel?.notice ?? '').includes(zh['stage.move.refused'].split('：')[0])
+    && (refused.panel?.notice ?? '').includes('one node at a time'),
+    String(refused.panel?.notice))
+  const legible = await page.evaluate(() => {
+    const notice = document.querySelector('[data-wui="stageNotice"]')
+    return {
+      color: getComputedStyle(notice).color,
+      fill: getComputedStyle(notice).backgroundColor,
+      surface: getComputedStyle(document.querySelector('[data-wui="stagePanel"]')).backgroundColor,
+    }
+  })
+  check('the refusal is readable (>= 4.5:1, WCAG AA)',
+    contrast(legible.color, overSurface(legible.fill, legible.surface)) >= 4.5,
+    JSON.stringify(legible))
+  await page.screenshot({ path: new URL('./stage-tag-refused.png', import.meta.url).pathname })
   await page.close()
 }
 

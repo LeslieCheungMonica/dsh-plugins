@@ -22,9 +22,14 @@
  *    folder, then re-read the resolution.
  * 4. **Several folders** offers each of them, and choosing one POSTs the attach
  *    that records it.
- * 5. **A Feishu refusal** renders the reason AND the fix for that reason: a
- *    login without `space:document:retrieve` names the scope to ask for, because
- *    a folder's contents cannot be listed without it.
+ * 5. **A Feishu refusal** renders the reason AND the fix for that reason, and the
+ *    fix is a flow rather than a sentence: a login missing
+ *    `space:document:retrieve` offers a login button, which opens a dialog with
+ *    the QR the host rendered and the page it pictures; when the host reports the
+ *    login landed, the dialog closes and the read that failed is re-read with the
+ *    caches dropped. Giving up CANCELS it (the host's child holds a one-shot
+ *    device code), and a refusal a login cannot fix — a folder this account may
+ *    not read — offers no login at all.
  *
  * Usage: pnpm harness:lark-panel   (builds the bundle first, then runs this)
  */
@@ -171,6 +176,20 @@ async function type(value) {
   await act(async () => {
     setter.call(input, value)
     input.dispatchEvent(new dom.window.Event('input', { bubbles: true }))
+    await settle()
+  })
+}
+
+/**
+ * Let real time pass under `act`, so a polled timer's state update lands.
+ *
+ * The login dialog polls the host while its QR is up, and `settle()` only flushes
+ * microtasks: a case that wants the second poll has to wait for it.
+ * @param ms - how long to wait.
+ */
+async function pass(ms) {
+  await act(async () => {
+    await new Promise(resolve => { setTimeout(resolve, ms) })
     await settle()
   })
 }
@@ -410,18 +429,47 @@ check('choosing one of them records that one',
   chosen?.body?.folderToken === 'flda' && chosen?.body?.name === PROJECT.title,
   JSON.stringify(chosen?.body ?? null))
 
-// 5. A Feishu refusal: the reason AND its fix, because a login made for the old
-//    panel cannot list a Drive folder at all.
-routes = {
+// 5. A Feishu refusal: the reason AND its fix. Retrying an authorization that was
+//    never granted changes nothing, so the fix is a login the panel carries out
+//    in place — QR, authorize, done — and the read that failed is re-read.
+const VERIFY = 'https://accounts.feishu.cn/oauth/v1/device/verify?flow_id=STUB&user_code=ABCD-1234'
+const FILE_LISTING = {
+  [FOLDER]: {
+    ok: true,
+    nodes: [{ token: 'doxcn1', expandToken: '', type: 'docx', name: '总体方案', url: 'https://feishu.cn/docx/doxcn1' }],
+    hasMore: false,
+    pageToken: null,
+  },
+}
+/** The host that refuses the folder read for a missing scope, and can log in. */
+const refusedHost = () => ({
   '/dsh-web-ui/lark/state': resolvedHost()['/dsh-web-ui/lark/state'],
   '/dsh-web-ui/lark/folder': {
     ok: false,
     error: {
       code: 'scope-missing',
       message: 'unauthorized: user authorization does not cover the required scope(s): space:document:retrieve',
+      missingScopes: ['space:document:retrieve'],
     },
   },
-}
+  '/dsh-web-ui/lark/auth/login': {
+    ok: true,
+    verificationUrl: VERIFY,
+    qrUrl: '/dsh-web-ui/lark/auth/qr.png?t=stub',
+    expiresIn: 600,
+    scopes: ['space:document:retrieve'],
+  },
+  '/dsh-web-ui/lark/auth/status': {
+    ok: true, phase: 'pending', expired: false, verificationUrl: VERIFY,
+    scopes: ['space:document:retrieve'], expiresIn: 540, message: '',
+  },
+  '/dsh-web-ui/lark/auth/cancel': { ok: true, phase: 'idle' },
+})
+
+/** The panel's own login action, as the failure surfaces render it. */
+const LOGIN_ACTION = '[data-wui="larkError"] [data-wui="larkNoteAction"][data-primary="true"]'
+
+routes = refusedHost()
 reset()
 await remount()
 check('a refusal is rendered with the scope to ask for',
@@ -431,6 +479,80 @@ check('a refusal is rendered with the scope to ask for',
 check('a refused resolution lists nothing',
   to('/dsh-web-ui/lark/files').length === 0,
   JSON.stringify(requests.map(entry => entry.url)))
+check('and the failure offers the login that fixes it',
+  document.querySelector(LOGIN_ACTION) !== null && body().includes(zh['lark.login.action']),
+  body())
+
+await click(LOGIN_ACTION)
+const started = to('/dsh-web-ui/lark/auth/login')[0]
+check('starting it asks for exactly the scope that failed',
+  started?.method === 'POST' && JSON.stringify(started?.body) === JSON.stringify({ scopes: ['space:document:retrieve'] }),
+  JSON.stringify(started?.body ?? null))
+const qr = document.querySelector('[data-wui="larkLoginQr"]')
+check('the dialog renders the QR image the host made',
+  qr !== null && qr.getAttribute('src') === '/dsh-web-ui/lark/auth/qr.png?t=stub',
+  qr === null ? 'no QR image' : String(qr.getAttribute('src')))
+const authLink = document.querySelector('[data-wui="larkLoginLink"] a')
+check('and the page it is a picture of, for an operator who would rather not scan',
+  authLink !== null && authLink.getAttribute('href') === VERIFY,
+  authLink === null ? 'no link' : String(authLink.getAttribute('href')))
+check('the scopes being requested are named in the dialog',
+  document.querySelector('[data-wui="larkLoginScopes"]') !== null,
+  body())
+
+await pass(1700)
+check('while the host is still waiting, the QR stays up',
+  document.querySelector('[data-wui="larkLoginQr"]') !== null
+  && to('/dsh-web-ui/lark/auth/status').length >= 1,
+  `polls: ${String(to('/dsh-web-ui/lark/auth/status').length)}`)
+
+// The operator scans: the host's child exits and the folder it could not read is
+// readable. The dialog has to notice, close, and re-read — with the caches dropped,
+// or it would serve back the refusal it had already cached.
+const foldersBefore = to('/dsh-web-ui/lark/folder').length
+routes = { ...resolvedHost({ files: FILE_LISTING }) }
+routes['/dsh-web-ui/lark/auth/status'] = {
+  ok: true, phase: 'done', expired: false, verificationUrl: '',
+  scopes: ['space:document:retrieve'], expiresIn: 0, message: '',
+}
+await pass(1700)
+const reloaded = to('/dsh-web-ui/lark/folder').slice(foldersBefore)
+check('a completed login closes the dialog and re-reads what failed',
+  document.querySelector('[data-wui="larkLoginQr"]') === null
+  && reloaded.length >= 1
+  && paramsOf(reloaded[0]).get('refresh') === '1',
+  JSON.stringify(reloaded.map(entry => entry.url)))
+check('and the read it was blocking renders its listing',
+  body().includes('总体方案'),
+  body())
+
+// Giving up: the host's child holds a device code for ten minutes and the CLI's
+// codes are one-shot, so leaving the dialog has to kill it.
+routes = refusedHost()
+reset()
+await remount()
+await click(LOGIN_ACTION)
+await clickText('[data-stub="Button"]', zh['lark.login.cancel'])
+check('leaving the dialog cancels the login in the host',
+  to('/dsh-web-ui/lark/auth/cancel').length === 1
+  && to('/dsh-web-ui/lark/auth/cancel')[0]?.method === 'POST',
+  JSON.stringify(requests.map(entry => `${entry.method} ${entry.url}`)))
+check('and the dialog is gone', document.querySelector('[data-wui="larkLoginQr"]') === null)
+
+// A refusal a login cannot fix: this account simply cannot read that folder, and
+// offering a login would send the operator round a loop.
+routes = {
+  '/dsh-web-ui/lark/state': resolvedHost()['/dsh-web-ui/lark/state'],
+  '/dsh-web-ui/lark/folder': {
+    ok: false,
+    error: { code: 'forbidden', message: 'no permission to read this folder' },
+  },
+}
+reset()
+await remount()
+check('a permission refusal offers no login, because a login is not its fix',
+  document.querySelector(LOGIN_ACTION) === null && body().includes('no permission to read this folder'),
+  body())
 
 // 8. The web-sidebar capability: a Feishu link goes INTO the GUI when a sidebar
 //    is mounted, and falls back to a tab when none is. The panel must not decide

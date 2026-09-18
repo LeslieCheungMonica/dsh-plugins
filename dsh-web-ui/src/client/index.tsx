@@ -39,6 +39,7 @@ import { Shell } from './Shell.tsx'
 import { NS, type ShellInjected } from './contract.ts'
 import { en, zh } from './locales.ts'
 import { createSelectionStore, type SelectionActions } from './project.ts'
+import { betterSidebarOpener, combineOpeners, webSidebarOpener, type OpenInSidebar } from './sidebarLink.ts'
 import { STYLES, STYLE_TAG_ID } from './styles.ts'
 
 /**
@@ -136,14 +137,41 @@ export function apply(ctx: ClientContext): void {
     return () => { void disposeService() }
   }, 'dsh-web-ui: in-GUI file viewer capability')
 
-  // `my-sider`'s docked web sidebar, as an OPTIONAL capability: a deployment
-  // without that plugin has no `ctx.webSidebar`, and every caller here falls back
-  // to opening a plain tab. Armed through `ctx.inject` for the same reason the
-  // plugin inventory is — this column must never wait on another plugin's UI.
-  let openInSidebar: ShellInjected['openInSidebar'] | undefined
+  // The sidebars that can show a page inside the GUI, as an OPTIONAL capability:
+  // a deployment with neither peer has neither service, and every caller here
+  // falls back to opening a plain tab. Armed through `ctx.inject` for the same
+  // reason the plugin inventory is — this column must never wait on another
+  // plugin's UI.
+  //
+  // A LIST, not one variable, because two peers can hold a sidebar and a
+  // deployment has either: `my-sider`'s docked web sidebar, and
+  // `better-sidebar`'s browser tab (the one the current deployment runs — see
+  // `sidebarLink.ts` for what each adapter is worth). Each arm fills the list
+  // when its peer appears and empties it again when that peer unloads, so the
+  // composed capability never offers a sidebar that is gone.
+  const sidebarPeers: OpenInSidebar[] = []
+  const openInSidebar = combineOpeners(sidebarPeers)
+
+  /**
+   * Arm one sidebar peer, and disarm it on that peer's unload.
+   * @param opener - the peer's adapter.
+   * @param label - the effect's label, naming the peer in diagnostics.
+   * @param scope - the injection scope the peer arrived on.
+   */
+  const armSidebarPeer = (opener: OpenInSidebar, label: string, scope: ClientContext): void => {
+    sidebarPeers.push(opener)
+    scope.effect(() => () => {
+      const at = sidebarPeers.indexOf(opener)
+      if (at !== -1) sidebarPeers.splice(at, 1)
+    }, label)
+  }
+
   ctx.inject(['webSidebar'], (scope: ClientContext) => {
-    openInSidebar = (url) => scope.webSidebar.open(url)
-    scope.effect(() => () => { openInSidebar = undefined }, 'dsh-web-ui: web sidebar capability')
+    armSidebarPeer(webSidebarOpener(scope.webSidebar), 'dsh-web-ui: my-sider web sidebar capability', scope)
+  })
+
+  ctx.inject(['betterSidebar'], (scope: ClientContext) => {
+    armSidebarPeer(betterSidebarOpener(scope.betterSidebar), 'dsh-web-ui: better-sidebar capability', scope)
   })
 
   // The host's plugin inventory, as the account drawer's Plugins block reads it.
@@ -215,9 +243,10 @@ export function apply(ctx: ClientContext): void {
     // a namespace and a slug and nothing else.
     listInstalledSkills: (projectPath) => listInstalledSkills(projectPath),
     installMarketSkill: (request) => installMarketSkill(request),
-    // `false` is the honest answer while no sidebar is armed: the caller then
-    // opens a tab, which is what a link did before this capability existed.
-    openInSidebar: (url) => openInSidebar?.(url) ?? false,
+    // The peers answer for themselves; `false` is the honest answer while none
+    // is armed, and the caller then opens a tab, which is what a link did before
+    // this capability existed.
+    openInSidebar,
   })
 
   // One selection handle, mounted by both root-scope registrations: the column

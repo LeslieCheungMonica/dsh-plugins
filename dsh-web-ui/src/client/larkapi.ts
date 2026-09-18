@@ -30,6 +30,8 @@
  *
  * @module dsh-web-ui/client/larkapi
  */
+import { isFlowStageId } from '../shared/stageflow.ts'
+import type { FlowStageId } from '../shared/stageflow.ts'
 import type { ProductCard, ProductCardResult } from './productCards.ts'
 
 /** The signed-in Feishu user, as the host reported it. */
@@ -120,6 +122,14 @@ export interface LarkError {
   readonly code: string
   /** One line a human can act on. */
   readonly message: string
+  /**
+   * The scopes a `scope-missing` failure named, when the host could read them.
+   *
+   * This is what the login is asked FOR: the operator authorizes the call that
+   * failed rather than a blanket grant, which is why it travels as data instead
+   * of being parsed back out of the message.
+   */
+  readonly missingScopes?: readonly string[]
 }
 
 /** A read's outcome. */
@@ -140,6 +150,19 @@ function str(raw: unknown, key: string): string {
   if (typeof raw !== 'object' || raw === null) return ''
   const value = (raw as Record<string, unknown>)[key]
   return typeof value === 'string' ? value : ''
+}
+
+/**
+ * Read a list-of-strings field of an unknown record.
+ * @param raw - the record, when it is one.
+ * @param key - the field name.
+ * @returns the strings, or an empty list when the field is not one.
+ */
+function stringList(raw: unknown, key: string): readonly string[] {
+  if (typeof raw !== 'object' || raw === null) return []
+  const value = (raw as Record<string, unknown>)[key]
+  if (!Array.isArray(value)) return []
+  return value.filter((entry): entry is string => typeof entry === 'string' && entry !== '')
 }
 
 /**
@@ -221,15 +244,97 @@ async function read<T>(
   const record = body as Record<string, unknown>
   if (record['ok'] !== true) {
     const error = record['error']
+    const missingScopes = stringList(error, 'missingScopes')
     return {
       ok: false,
       error: {
         code: str(error, 'code') || 'failed',
         message: str(error, 'message') || '飞书接口调用失败。',
+        ...(missingScopes.length === 0 ? {} : { missingScopes }),
       },
     }
   }
   return { ok: true, value: decode(record) }
+}
+
+/** Where the interactive Feishu login stands. */
+export interface LarkLogin {
+  /** `idle` before a login starts, `pending` while a human scans, then how it ended. */
+  readonly phase: 'idle' | 'pending' | 'done' | 'failed'
+  /** True when the last login ended because its QR expired unscanned. */
+  readonly expired: boolean
+  /** The page the operator opens to authorize; empty once the login settled. */
+  readonly verificationUrl: string
+  /** The scopes this login asked for. */
+  readonly scopes: readonly string[]
+  /** Seconds left before the QR dies; 0 when nothing is in flight. */
+  readonly expiresIn: number
+  /** The host's own words when the login failed. */
+  readonly message: string
+}
+
+/** What starting a login answered. */
+export interface LarkLoginStart {
+  /** The page the operator opens (or scans) to authorize. */
+  readonly verificationUrl: string
+  /** The QR image URL, already cache-busted for this session. */
+  readonly qrUrl: string
+  /** How long the QR stays valid, in seconds. */
+  readonly expiresIn: number
+  /** The scopes this login asked for. */
+  readonly scopes: readonly string[]
+}
+
+/**
+ * Begin a login, optionally for specific scopes.
+ *
+ * Omitted or empty scopes mean the host's own set — what the panel sends when
+ * the failure did not name any (a missing login rather than a missing scope).
+ * @param scopes - the scopes to request.
+ * @returns the QR and the page to authorize, or a renderable error.
+ */
+export function startLarkLogin(scopes?: readonly string[]): Promise<LarkResult<LarkLoginStart>> {
+  return read('/auth/login', body => ({
+    verificationUrl: str(body, 'verificationUrl'),
+    qrUrl: str(body, 'qrUrl'),
+    expiresIn: typeof body['expiresIn'] === 'number' ? body['expiresIn'] : 0,
+    scopes: stringList(body, 'scopes'),
+  }), {
+    method: 'POST',
+    body: JSON.stringify(scopes === undefined ? {} : { scopes: [...scopes] }),
+  })
+}
+
+/**
+ * Ask where the login stands.
+ * @returns the session state, or a renderable error.
+ */
+export function readLarkLogin(): Promise<LarkResult<LarkLogin>> {
+  return read('/auth/status', body => ({
+    phase: loginPhase(body['phase']),
+    expired: body['expired'] === true,
+    verificationUrl: str(body, 'verificationUrl'),
+    scopes: stringList(body, 'scopes'),
+    expiresIn: typeof body['expiresIn'] === 'number' ? body['expiresIn'] : 0,
+    message: str(body, 'message'),
+  }))
+}
+
+/**
+ * Abandon the login in flight, killing the host's child that waits on it.
+ * @returns whether the host accepted the cancellation.
+ */
+export function cancelLarkLogin(): Promise<LarkResult<true>> {
+  return read('/auth/cancel', () => true, { method: 'POST' })
+}
+
+/**
+ * Narrow the host's phase string to the union this module renders.
+ * @param value - the wire value.
+ * @returns the phase, defaulting to `idle` for anything unrecognized.
+ */
+function loginPhase(value: unknown): LarkLogin['phase'] {
+  return value === 'pending' || value === 'done' || value === 'failed' ? value : 'idle'
 }
 
 /**
@@ -435,6 +540,16 @@ export interface ProjectRecord {
   readonly larkFolderToken: string
   /** The folder's Feishu link, recorded beside its token. */
   readonly larkFolderUrl: string
+  /**
+   * The project's node in the FDE delivery flow, by its stable id, or `null` while
+   * nobody has recorded a position.
+   *
+   * `null` is NOT the first node — it is "this project has never been placed",
+   * which is what lets a FIRST registration name any node (a project picked up
+   * mid-delivery, or one whose node only ever lived in a browser: see
+   * `src/host/projects.ts` and `src/client/stage.ts`).
+   */
+  readonly stage: FlowStageId | null
   /** Epoch ms of the last write. */
   readonly updatedAt: number
 }
@@ -487,6 +602,7 @@ export function readProductCards(): Promise<LarkResult<ProductCardResult>> {
 function toRecord(raw: unknown): ProjectRecord | null {
   if (typeof raw !== 'object' || raw === null) return null
   const updatedAt = (raw as Record<string, unknown>)['updatedAt']
+  const stage = (raw as Record<string, unknown>)['stage']
   return {
     name: str(raw, 'name'),
     path: str(raw, 'path'),
@@ -494,6 +610,10 @@ function toRecord(raw: unknown): ProjectRecord | null {
     productCardId: str(raw, 'productCardId'),
     larkFolderToken: str(raw, 'larkFolderToken'),
     larkFolderUrl: str(raw, 'larkFolderUrl'),
+    // Narrowed rather than passed through: a node this build does not know reads
+    // as "none recorded", which is the one answer that cannot be acted on wrongly
+    // (the host still holds the real one, and it judges the next move).
+    stage: isFlowStageId(stage) ? stage : null,
     updatedAt: typeof updatedAt === 'number' ? updatedAt : 0,
   }
 }
@@ -516,6 +636,35 @@ export function writeProjectRecord(input: {
   productCardId: string
 }): Promise<LarkResult<ProjectRecord | null>> {
   return read('/project', body => toRecord(body['project']), {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
+/**
+ * Move one project one node forward in the FDE delivery flow.
+ *
+ * The HOST judges the move — it holds the record and enforces "one node at a
+ * time", including the exemption that lets a project with nothing recorded name
+ * any node as its first (see `ProjectStore.setStage`) — so nothing is recorded
+ * optimistically here: the answer IS the record, and a caller shows what it says.
+ *
+ * A refusal arrives as a renderable error rather than a moved record, with the
+ * code `not-next`. Two callers have a reason to be told no: a move that is not the
+ * next node (a stale page, two operators, a hand-edited document), and — for the
+ * migration in `stage.ts` — a project that already has a position when this
+ * browser thought it was registering the first one. Both leave the project where
+ * it was, which is why the answer carries no record: the way to learn where it
+ * really is, is to `readProjectRecord`.
+ * @param input - the project's path and name, and the node to enter.
+ * @returns the record the host now holds, or a renderable error.
+ */
+export function writeProjectStage(input: {
+  path: string
+  name: string
+  stage: FlowStageId
+}): Promise<LarkResult<ProjectRecord | null>> {
+  return read('/project/stage', body => toRecord(body['project']), {
     method: 'POST',
     body: JSON.stringify(input),
   })

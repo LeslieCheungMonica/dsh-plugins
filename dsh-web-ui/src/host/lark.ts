@@ -28,11 +28,11 @@
  *
  * @module dsh-web-ui/host/lark
  */
-import { execFile } from 'node:child_process'
-import type { ExecFileException } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
+import type { ChildProcess, ExecFileException } from 'node:child_process'
 import { constants as fsConstants } from 'node:fs'
-import { access } from 'node:fs/promises'
-import { homedir } from 'node:os'
+import { access, mkdtemp, readFile, rm } from 'node:fs/promises'
+import { homedir, tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 
 /** The user `lark-cli` is signed in as. */
@@ -117,7 +117,8 @@ export type LarkFailure =
   /**
    * The login does not carry a scope this call needs. Distinct from
    * `cli-failed` because the fix is a re-login with that scope, and the
-   * envelope names which one.
+   * envelope names which one. The panel turns this one into a login it can
+   * complete in place (see `startLogin`).
    */
   | 'scope-missing'
   /** The caller may not do this to that resource: a folder they cannot read. */
@@ -126,7 +127,19 @@ export type LarkFailure =
 /** The adapter's result type: a value, or a typed reason there is none. */
 export type LarkOutcome<T> =
   | { readonly ok: true; readonly value: T }
-  | { readonly ok: false; readonly code: LarkFailure; readonly message: string }
+  | {
+    readonly ok: false
+    readonly code: LarkFailure
+    readonly message: string
+    /**
+     * The scopes a `scope-missing` failure named, when the CLI named any.
+     *
+     * Carried rather than left in the message because it is what the login flow
+     * ASKS FOR: the operator authorizes exactly what the call needed instead of
+     * a blanket grant, and the panel does not parse a sentence to find out.
+     */
+    readonly missingScopes?: readonly string[]
+  }
 
 /** Structured logger shape (the subset of cordis's logger this adapter uses). */
 export interface LarkLogger {
@@ -147,6 +160,86 @@ const CALL_TIMEOUT_MS = 20_000
 
 /** Deadline for the local-only `auth status` read. */
 const STATUS_TIMEOUT_MS = 8_000
+
+/**
+ * Deadlines for the two short steps of a device-flow login.
+ *
+ * Neither waits on a human: `auth login --no-wait` registers a device code and
+ * returns, and `auth qrcode` renders an image. The THIRD step — completing the
+ * login with that code — is the one that waits, and it is deliberately spawned
+ * without a deadline (see `startLogin`).
+ */
+const LOGIN_STEP_TIMEOUT_MS = 20_000
+
+/** Name of the QR image inside its session's own temporary directory. */
+const QR_FILE = 'qr.png'
+
+/**
+ * Feishu's own alphabet for a scope name: `space:document:retrieve`.
+ *
+ * A scope is the one field of a login request that reaches the CLI as an ARGV
+ * element, so it is matched against this before it is used at all — the same
+ * rule the Drive tokens get, for the same reason.
+ */
+export const SCOPE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/
+
+/**
+ * What a login asks for when the caller names no scope.
+ *
+ * The panel's own calls, and nothing else: listing a folder's children,
+ * creating a project's folder, and `offline_access` so the authorization
+ * survives its access token. A blanket `--recommend` grant would put every
+ * scope this tenant owns on one consent screen, which is a worse question to
+ * ask than "may this read your Drive folders".
+ */
+export const DEFAULT_LOGIN_SCOPES: readonly string[] = Object.freeze([
+  'space:document:retrieve',
+  'space:folder:create',
+  'offline_access',
+])
+
+/**
+ * The CLI's own words for "the user must authorize this".
+ *
+ * `missing_scope`/`insufficient_scope` arrive as subtypes; `need_user_authorization`
+ * is what the CLI prints when the identity exists but the grant does not cover
+ * the call — it has been seen as a subtype AND as a bare message, so both are
+ * matched rather than one shape being trusted.
+ */
+const NEEDS_AUTHORIZATION = /need_user_authorization|missing_scope|insufficient_scope/i
+
+/**
+ * The scopes the CLI named in a failure, from whichever field carries them.
+ *
+ * Three shapes exist in the wild: the structured `missing_scopes` array, a
+ * message ending in `required scope(s): a, b`, and a `hint` naming
+ * `--scope "a b"`. They are read in that order of trust.
+ * @param error - the CLI's error record.
+ * @returns the scopes, or undefined when the CLI named none this adapter can read.
+ */
+function missingScopesOf(error: Envelope['error']): readonly string[] | undefined {
+  const keep = (values: readonly string[]): readonly string[] | undefined => {
+    const scopes = values.map(value => value.trim()).filter(value => SCOPE_PATTERN.test(value))
+    return scopes.length === 0 ? undefined : [...new Set(scopes)]
+  }
+  const structural = error?.missing_scopes
+  if (Array.isArray(structural)) {
+    const scopes = keep(structural.filter((value): value is string => typeof value === 'string'))
+    if (scopes !== undefined) return scopes
+  }
+  const message = error?.message ?? ''
+  const listed = /required scope\(s\):\s*([^;]+)/i.exec(message)?.[1]
+  if (listed !== undefined) {
+    const scopes = keep(listed.split(/[,\s]+/))
+    if (scopes !== undefined) return scopes
+  }
+  const hinted = /--scope\s+"?([^"]+)"?/.exec(error?.hint ?? '')?.[1]
+  if (hinted !== undefined) {
+    const scopes = keep(hinted.split(/[,\s]+/))
+    if (scopes !== undefined) return scopes
+  }
+  return undefined
+}
 
 /** Child output ceiling: a 50-node page is small, but `--page-all` is not. */
 const MAX_BUFFER_BYTES = 32 * 1024 * 1024
@@ -283,20 +376,33 @@ function looksLikeNetworkFailure(detail: string): boolean {
  * into `cli-failed` would make two very different operator problems — "your
  * network is wrong" and "your login is missing a permission" — read the same in
  * the panel.
- * @param type - the envelope's `error.type`.
- * @param subtype - the envelope's `error.subtype`.
- * @returns the failure code to report.
+ *
+ * A failure that asks the operator to AUTHORIZE is separated from one that
+ * refuses them, because only the first has a fix the panel can carry out: the
+ * second is a permission the operator has to be granted, and offering them a
+ * login for it would send them round a loop that changes nothing.
+ * @param error - the envelope's `error` record.
+ * @returns the failure code to report, and the scopes it named when it named any.
  */
-function failureCode(type: string | undefined, subtype: string | undefined): LarkFailure {
-  if (type === 'network') return 'cli-network'
+function decodeFailure(error: Envelope['error']): {
+  code: LarkFailure
+  missingScopes?: readonly string[]
+} {
+  const type = error?.type
+  const subtype = error?.subtype
+  if (type === 'network') return { code: 'cli-network' }
   if (type === 'authorization') {
-    return subtype === 'missing_scope' || subtype === 'insufficient_scope' ? 'scope-missing' : 'forbidden'
+    if (NEEDS_AUTHORIZATION.test(subtype ?? '') || NEEDS_AUTHORIZATION.test(error?.message ?? '')) {
+      const scopes = missingScopesOf(error)
+      return scopes === undefined ? { code: 'scope-missing' } : { code: 'scope-missing', missingScopes: scopes }
+    }
+    return { code: 'forbidden' }
   }
   // Feishu's own refusals arrive under a generic type with a permission-flavoured
   // subtype (`permission_denied`), which is the shape a folder the caller cannot
   // read produces.
-  if (subtype !== undefined && /permission|forbidden|denied|no_permission/i.test(subtype)) return 'forbidden'
-  return 'cli-failed'
+  if (subtype !== undefined && /permission|forbidden|denied|no_permission/i.test(subtype)) return { code: 'forbidden' }
+  return { code: 'cli-failed' }
 }
 
 /** The envelope `lark-cli` prints for a data call. */
@@ -308,6 +414,12 @@ interface Envelope {
     readonly subtype?: string
     readonly message?: string
     readonly hint?: string
+    /**
+     * The scopes a `need_user_authorization`/`missing_scope` failure names
+     * structurally. Present on most of them; the message and the hint carry the
+     * same information when it is not, which is why both are read.
+     */
+    readonly missing_scopes?: unknown
   }
   /**
    * `auth status --json` answers a bare status document instead of the
@@ -326,6 +438,73 @@ interface ExecOutcome {
   readonly stdout: string
   readonly stderr: string
   readonly timedOut: boolean
+}
+
+/**
+ * One device-flow login the host is watching.
+ *
+ * The session owns everything the flow needs after the panel has been answered:
+ * the child that is waiting for the human, the deadline the CLI gave the device
+ * code, and the directory holding the QR image.
+ */
+interface LoginSession {
+  /** The page the operator opens to authorize. */
+  readonly verificationUrl: string
+  /** The scopes this session asked for. */
+  readonly scopes: readonly string[]
+  /** When the session began (the QR URL's cache-buster). */
+  readonly startedAt: number
+  /** When the device code dies; a login nobody scanned is cleared here. */
+  readonly expiresAt: number
+  /** Directory holding this session's QR image, removed with the session. */
+  readonly dir: string
+  /** The child completing the login, once it has been spawned. */
+  child: ChildProcess | undefined
+  /** Whether that child has exited. */
+  settled: boolean
+  /** Whether it exited successfully. */
+  ok: boolean
+  /** Its diagnostics when it did not. */
+  message: string
+}
+
+/** What one device-flow login is doing. */
+export interface LarkLoginSession {
+  /**
+   * `idle` when nothing is in flight, `pending` while a human is scanning,
+   * `done` once the CLI exchanged the code for a token, `failed` when it
+   * refused — the last two stay until the next start or a cancel, so a panel
+   * that reloads mid-flow still learns how it ended.
+   */
+  readonly phase: 'idle' | 'pending' | 'done' | 'failed'
+  /**
+   * True when the last session ended because its device code expired.
+   *
+   * Its own flag rather than a phase, because the panel's answer to it is
+   * different from "nothing is happening": a dead code can only be replaced,
+   * never resumed.
+   */
+  readonly expired: boolean
+  /** The page the operator opens; empty unless a session exists. */
+  readonly verificationUrl: string
+  /** The scopes the session asked for. */
+  readonly scopes: readonly string[]
+  /** Seconds left before the device code dies; 0 when nothing is in flight. */
+  readonly expiresIn: number
+  /** The CLI's own words when the login failed; empty otherwise. */
+  readonly message: string
+}
+
+/** What starting a login produced. */
+export interface LarkLoginStart {
+  /** The page the operator opens (or scans) to authorize. */
+  readonly verificationUrl: string
+  /** How long that page and its device code stay valid, in seconds. */
+  readonly expiresIn: number
+  /** The scopes this session asked for. */
+  readonly scopes: readonly string[]
+  /** When the session began; the QR image URL carries it to defeat caching. */
+  readonly startedAt: number
 }
 
 /** The adapter the routes use. */
@@ -368,6 +547,29 @@ export interface LarkCli {
     parentFolderToken: string
     name: string
   }) => Promise<LarkOutcome<LarkFolder>>
+  /**
+   * Begin a device-flow login, optionally for specific scopes.
+   *
+   * Three CLI calls, in order: `auth login --scope … --no-wait` to register a
+   * device code, `auth qrcode` to render the page as an image, and — in the
+   * BACKGROUND — `auth login --device-code …`, which is the only call that
+   * reports whether the human authorized. That last one waits on a person for
+   * up to ten minutes, so it is spawned outside the serialized queue: a folder
+   * read issued while the operator scans must not wait behind them.
+   *
+   * One session at a time, and a new start replaces the old one, because the
+   * CLI's device codes are one-shot: two live sessions would be two logins
+   * racing for one account.
+   * @param scopes - the scopes to request; the panel's own set when omitted.
+   * @returns what to show the operator, or a typed failure.
+   */
+  startLogin: (scopes?: readonly string[]) => Promise<LarkOutcome<LarkLoginStart>>
+  /** Where the current login stands. Synchronous: it only reads in-memory state. */
+  loginStatus: () => LarkLoginSession
+  /** The PNG bytes of the current session's QR, or a typed failure when there is none. */
+  loginQr: () => Promise<LarkOutcome<Buffer>>
+  /** Abandon the current login and kill the child waiting on it. */
+  cancelLogin: () => void
   /** Drop every cached read, so the next call reaches Feishu again. */
   invalidate: () => void
 }
@@ -451,14 +653,18 @@ async function discoverBin(override: string | undefined): Promise<string | undef
  * @param bin - the executable path.
  * @param args - the complete argv (already validated).
  * @param timeoutMs - deadline for this call.
+ * @param cwd - working directory; the CLI resolves a relative output path
+ * against it, which is how the QR image lands in this adapter's own directory
+ * rather than in the operator's project.
  * @returns the exit code and both streams.
  */
-function execOnce(bin: string, args: readonly string[], timeoutMs: number): Promise<ExecOutcome> {
+function execOnce(bin: string, args: readonly string[], timeoutMs: number, cwd?: string): Promise<ExecOutcome> {
   return new Promise((resolve) => {
     execFile(bin, [...args], {
       timeout: timeoutMs,
       maxBuffer: MAX_BUFFER_BYTES,
       windowsHide: true,
+      ...(cwd === undefined ? {} : { cwd }),
       // `NO_COLOR`/`CLICOLOR` keep a terminal-flavoured CLI from wrapping its
       // JSON or its error text in escape sequences this adapter would then have
       // to strip.
@@ -475,6 +681,39 @@ function execOnce(bin: string, args: readonly string[], timeoutMs: number): Prom
       })
     })
   })
+}
+
+/**
+ * Kill a login child AND everything it spawned.
+ *
+ * `lark-cli` is a Node shim that starts the real binary, so signalling the pid
+ * this adapter holds only kills the shim: the grandchild that actually polls the
+ * device code is reparented to the init process and keeps a one-shot code alive
+ * for the rest of its ten minutes — which is exactly what cancelling exists to
+ * prevent. The session is therefore spawned `detached`, making it a process-group
+ * leader, and the whole group is signalled through its negative pid.
+ *
+ * SIGTERM first, then SIGKILL after a short grace period: the only thing being
+ * interrupted is a wait, and a shim that ignores SIGTERM must not outlive it.
+ * @param child - the spawned login child.
+ */
+function killLoginChild(child: ChildProcess | undefined): void {
+  const pid = child?.pid
+  if (child === undefined || pid === undefined) return
+  const signal = (name: NodeJS.Signals): void => {
+    try {
+      process.kill(-pid, name)
+    } catch {
+      // No group to signal (it already died, or the platform has none): fall back
+      // to the process this adapter holds.
+      try { child.kill(name) } catch { /* already gone */ }
+    }
+  }
+  signal('SIGTERM')
+  const timer = setTimeout(() => {
+    if (child.exitCode === null && child.signalCode === null) signal('SIGKILL')
+  }, 2_000)
+  timer.unref?.()
 }
 
 /**
@@ -547,6 +786,16 @@ export function createLarkCli(options: { log: LarkLogger }): LarkCli {
   const stateCache = new Map<string, Cached<LarkState>>()
   const filesCache = new Map<string, Cached<LarkLevel>>()
   const childrenCache = new Map<string, Cached<readonly LarkEntry[]>>()
+  /** The one device-flow login in flight (or the last one to finish). */
+  let login: LoginSession | undefined
+  /**
+   * Whether the LAST session ended by expiring.
+   *
+   * Kept outside the session because it has to outlive it: the panel reads
+   * `phase: 'idle'` plus this flag and knows the difference between "nothing is
+   * happening" and "your QR died, generate another one".
+   */
+  let loginExpired = false
 
 
   /**
@@ -601,13 +850,15 @@ export function createLarkCli(options: { log: LarkLogger }): LarkCli {
         const error = envelope.error
         const message = error?.message ?? `${BIN_NAME} refused the call`
         const hint = error?.hint
+        // The CLI classifies its own failures; a transport one is worth
+        // distinguishing because the fix is the network, not the account, and
+        // an authorization one because the fix is a re-login, not a retry.
+        const { code, missingScopes } = decodeFailure(error)
         return {
           ok: false,
-          // The CLI classifies its own failures; a transport one is worth
-          // distinguishing because the fix is the network, not the account, and
-          // an authorization one because the fix is a re-login, not a retry.
-          code: failureCode(error?.type, error?.subtype),
+          code,
           message: hint === undefined ? message : `${message} (${hint})`,
+          ...(missingScopes === undefined ? {} : { missingScopes }),
         }
       }
       return { ok: true, value: envelope }
@@ -836,6 +1087,205 @@ export function createLarkCli(options: { log: LarkLogger }): LarkCli {
     childrenCache.clear()
   }
 
+  /**
+   * Read one field of the device-flow document.
+   *
+   * `auth login --no-wait --json` prints `device_code`/`verification_url`/
+   * `expires_in` at the top level, while other commands wrap their payload in
+   * `data`. Both are accepted so a CLI that changes one way does not silently
+   * produce an empty login.
+   * @param body - the parsed document.
+   * @param key - the snake_case field name.
+   * @returns the value, or undefined when it is absent.
+   */
+  const loginField = (body: Record<string, unknown>, key: string): unknown => {
+    const data = body['data']
+    if (typeof data === 'object' && data !== null) {
+      const nested = (data as Record<string, unknown>)[key]
+      if (nested !== undefined) return nested
+    }
+    return body[key]
+  }
+
+  /** The state a panel sees when no login exists. */
+  const idleLogin = (): LarkLoginSession => ({
+    phase: 'idle',
+    expired: loginExpired,
+    verificationUrl: '',
+    scopes: [],
+    expiresIn: 0,
+    message: '',
+  })
+
+  /**
+   * Kill a session's child and forget the session.
+   * @param session - the session to drop.
+   */
+  const clearLogin = (session: LoginSession): void => {
+    killLoginChild(session.settled ? undefined : session.child)
+    if (login === session) login = undefined
+    // The QR is a short-lived secret for one device code: it does not outlive
+    // the session that produced it.
+    void rm(session.dir, { recursive: true, force: true }).catch(() => undefined)
+  }
+
+  const startLogin: LarkCli['startLogin'] = async (requested) => {
+    const scopes = requested === undefined || requested.length === 0 ? [...DEFAULT_LOGIN_SCOPES] : [...requested]
+    for (const scope of scopes) {
+      // Defense in depth: the route refuses a scope outside this alphabet before
+      // reaching the adapter, and the adapter refuses it too, because a scope is
+      // the one login field that becomes an ARGV element.
+      if (!SCOPE_PATTERN.test(scope)) {
+        return { ok: false, code: 'cli-failed', message: `not a Feishu scope: ${JSON.stringify(scope)}` }
+      }
+    }
+    if (login !== undefined) clearLogin(login)
+    loginExpired = false
+
+    const bin = await resolveBin()
+    if (bin === undefined) {
+      return {
+        ok: false,
+        code: 'cli-missing',
+        message: `\`${BIN_NAME}\` is not installed where this host can find it (set ${BIN_ENV} to its absolute path)`,
+      }
+    }
+
+    const asked = await serialize(() => execOnce(
+      bin,
+      ['auth', 'login', '--scope', scopes.join(' '), '--no-wait', '--json'],
+      LOGIN_STEP_TIMEOUT_MS,
+    ))
+    // `--no-wait` answers a bare document rather than the `{ok, data}` envelope,
+    // so a missing `ok` is its normal shape — the same exception `auth status` gets.
+    const device = parse(asked, false)
+    if (!device.ok) return device
+    const body = device.value as unknown as Record<string, unknown>
+    const deviceCode = typeof loginField(body, 'device_code') === 'string' ? loginField(body, 'device_code') as string : ''
+    const verificationUrl = typeof loginField(body, 'verification_url') === 'string' ? loginField(body, 'verification_url') as string : ''
+    const reported = Number(loginField(body, 'expires_in'))
+    const seconds = Number.isFinite(reported) && reported > 0 ? reported : 600
+    if (deviceCode === '' || verificationUrl === '') {
+      return { ok: false, code: 'cli-unreadable', message: `${BIN_NAME} did not answer a device code for the login` }
+    }
+
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-web-ui-lark-login-'))
+    const rendered = await serialize(() => execOnce(
+      bin,
+      ['auth', 'qrcode', verificationUrl, '-o', QR_FILE],
+      LOGIN_STEP_TIMEOUT_MS,
+      dir,
+    ))
+    const qr = parse(rendered, false)
+    if (!qr.ok) {
+      await rm(dir, { recursive: true, force: true }).catch(() => undefined)
+      return qr
+    }
+    try {
+      await access(join(dir, QR_FILE))
+    } catch {
+      await rm(dir, { recursive: true, force: true }).catch(() => undefined)
+      return { ok: false, code: 'cli-unreadable', message: `${BIN_NAME} rendered no QR image for the login` }
+    }
+
+    const session: LoginSession = {
+      verificationUrl,
+      scopes,
+      startedAt: Date.now(),
+      expiresAt: Date.now() + seconds * 1000,
+      dir,
+      child: undefined,
+      settled: false,
+      ok: false,
+      message: '',
+    }
+    login = session
+    // Spawned OUTSIDE `serialize`, and this is the point of the whole flow: this
+    // child waits on a human for up to ten minutes, and a queue that held it
+    // would freeze every folder read behind one operator's scan.
+    let tail = ''
+    const child = spawn(bin, ['auth', 'login', '--device-code', deviceCode, '--json'], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, NO_COLOR: '1', CLICOLOR: '0' },
+      // Its own process group, so cancelling can reap the shim AND the binary it
+      // started (see `killLoginChild`).
+      detached: true,
+    })
+    session.child = child
+    const remember = (chunk: unknown): void => { tail = `${tail}${String(chunk)}`.slice(-2_000) }
+    child.stdout?.on('data', remember)
+    child.stderr?.on('data', remember)
+    child.on('error', (error: Error) => {
+      if (login !== session) return
+      session.settled = true
+      session.ok = false
+      session.message = error.message
+      log.warn(`lark login could not start: ${error.message}`)
+    })
+    child.on('close', (code: number | null) => {
+      // A newer session owns the state now: this child's outcome is stale.
+      if (login !== session) return
+      session.settled = true
+      session.ok = code === 0
+      session.message = code === 0 ? '' : (cleanDetail(tail) || `${BIN_NAME} exited with code ${String(code)}`)
+      if (session.ok) {
+        // The authorization that just landed is exactly what the cached reads
+        // were missing, so the copies that failed are dropped with it.
+        invalidate()
+        log.info('lark login completed; cached Feishu reads dropped')
+      } else {
+        log.warn(`lark login failed: ${session.message}`)
+      }
+    })
+    log.info(`lark login started for ${String(scopes.length)} scope(s); waiting for the operator to authorize`)
+    return { ok: true, value: { verificationUrl, expiresIn: seconds, scopes, startedAt: session.startedAt } }
+  }
+
+  const loginStatus: LarkCli['loginStatus'] = () => {
+    const session = login
+    if (session === undefined) return idleLogin()
+    if (!session.settled && Date.now() >= session.expiresAt) {
+      // Nobody scanned in time: the device code is dead, so the child can only
+      // fail now. The panel is told to offer a NEW code rather than a dead one.
+      log.info('lark login device code expired before it was scanned')
+      loginExpired = true
+      clearLogin(session)
+      return idleLogin()
+    }
+    return {
+      phase: session.settled ? (session.ok ? 'done' : 'failed') : 'pending',
+      expired: false,
+      // A finished session has no page left to open.
+      verificationUrl: session.settled ? '' : session.verificationUrl,
+      scopes: session.scopes,
+      expiresIn: session.settled ? 0 : Math.max(0, Math.ceil((session.expiresAt - Date.now()) / 1000)),
+      message: session.message,
+    }
+  }
+
+  const loginQr: LarkCli['loginQr'] = async () => {
+    const session = login
+    if (session === undefined || session.settled) {
+      return { ok: false, code: 'cli-failed', message: 'no Feishu login is waiting to be scanned' }
+    }
+    if (Date.now() >= session.expiresAt) {
+      return { ok: false, code: 'cli-failed', message: 'the Feishu login device code expired' }
+    }
+    try {
+      return { ok: true, value: await readFile(join(session.dir, QR_FILE)) }
+    } catch (error) {
+      return {
+        ok: false,
+        code: 'cli-unreadable',
+        message: `the QR image could not be read: ${error instanceof Error ? error.message : String(error)}`,
+      }
+    }
+  }
+
+  const cancelLogin: LarkCli['cancelLogin'] = () => {
+    if (login !== undefined) clearLogin(login)
+  }
+
 
   /**
    * Create one Drive folder under a parent.
@@ -900,5 +1350,5 @@ export function createLarkCli(options: { log: LarkLogger }): LarkCli {
     }
   }
 
-  return { state, files, children, createFolder, invalidate }
+  return { state, files, children, createFolder, startLogin, loginStatus, loginQr, cancelLogin, invalidate }
 }

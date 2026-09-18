@@ -56,13 +56,14 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import {
-  createLarkCli, DRIVE_TOKEN_PATTERN, feishuUrl, folderNameFromPath,
+  createLarkCli, DRIVE_TOKEN_PATTERN, feishuUrl, folderNameFromPath, SCOPE_PATTERN,
   type LarkFolder, type LarkOutcome,
 } from './lark.ts'
 import { createFolderResolver } from './folder.ts'
 import { asBackground, createProjectStore } from './projects.ts'
 import { readProductCards } from './products.ts'
 import { registerStageGateRoutes } from './stage-gate.ts'
+import { FLOW_STAGE_IDS, isFlowStageId, nextStageId } from '../shared/stageflow.ts'
 
 /** Path prefix of every route this module registers. */
 export const LARK_ROUTE_PREFIX = '/dsh-web-ui/lark'
@@ -80,6 +81,26 @@ const ATTACH_PATH = `${LARK_ROUTE_PREFIX}/folder/attach`
 const FILES_PATH = `${LARK_ROUTE_PREFIX}/files`
 
 /**
+ * The interactive login: begin one, watch it, render its QR, give up on it.
+ *
+ * Four routes rather than one because the browser does four different things
+ * with them, and only the first carries a request body. They exist because the
+ * one failure the panel cannot answer by retrying is "the login does not cover
+ * this scope": the fix is an authorization, and the panel is where the operator
+ * already is.
+ */
+const LOGIN_PATH = `${LARK_ROUTE_PREFIX}/auth/login`
+
+/** Where the login stands (polled while the dialog is open). */
+const LOGIN_STATUS_PATH = `${LARK_ROUTE_PREFIX}/auth/status`
+
+/** The QR image itself. An `<img>` can only be fed a URL, so it needs a route. */
+const LOGIN_QR_PATH = `${LARK_ROUTE_PREFIX}/auth/qr.png`
+
+/** Abandon the login in flight, killing the child that waits on it. */
+const LOGIN_CANCEL_PATH = `${LARK_ROUTE_PREFIX}/auth/cancel`
+
+/**
  * One project's own record.
  *
  * It lives under `/lark` for a HISTORICAL reason, not a semantic one: this prefix
@@ -89,6 +110,22 @@ const FILES_PATH = `${LARK_ROUTE_PREFIX}/files`
  * behaviour behind it.
  */
 const PROJECT_PATH = `${LARK_ROUTE_PREFIX}/project`
+
+/**
+ * Where a project stands in the FDE delivery flow: the one write that moves it.
+ *
+ * A route of its own rather than a field `POST /project` carries, for the reason
+ * the store's other two writes have their own calls: they come from different
+ * surfaces and carry different authority. The form records what a project IS
+ * (its name, its product) and its write preserves the node; this moves the
+ * delivery forward, one node at a time, and the RULE is the store's
+ * (`setStage`) because judging a move means reading the record it is judged
+ * against.
+ *
+ * The node is READ as part of the record — `GET /project` already answers it —
+ * so there is deliberately no read route here.
+ */
+const PROJECT_STAGE_PATH = `${LARK_ROUTE_PREFIX}/project/stage`
 
 /** The product-card catalogue this deployment offers. */
 const CARDS_PATH = `${LARK_ROUTE_PREFIX}/cards`
@@ -187,9 +224,14 @@ function sendMethodNotAllowed(res: ServerResponse, allow: string): void {
 /**
  * Read a JSON request body under a hard byte cap.
  * @param req - the request.
+ * @param options - `allowEmpty` treats a zero-length body as `undefined`
+ * rather than as a malformed one, for a route whose body is optional.
  * @returns the parsed value, or a message saying why it could not be read.
  */
-async function readJsonBody(req: IncomingMessage): Promise<{ ok: true; value: unknown } | { ok: false; message: string }> {
+async function readJsonBody(
+  req: IncomingMessage,
+  options: { allowEmpty?: boolean } = {},
+): Promise<{ ok: true; value: unknown } | { ok: false; message: string }> {
   const chunks: Buffer[] = []
   let size = 0
   for await (const chunk of req) {
@@ -199,7 +241,9 @@ async function readJsonBody(req: IncomingMessage): Promise<{ ok: true; value: un
     chunks.push(buffer)
   }
   const text = Buffer.concat(chunks).toString('utf8').trim()
-  if (text === '') return { ok: false, message: 'the request body is empty' }
+  if (text === '') {
+    return options.allowEmpty === true ? { ok: true, value: undefined } : { ok: false, message: 'the request body is empty' }
+  }
   try {
     return { ok: true, value: JSON.parse(text) as unknown }
   } catch {
@@ -219,7 +263,16 @@ function sendOutcome<T>(
   wrap: (value: T) => Record<string, unknown>,
 ): void {
   if (!outcome.ok) {
-    sendJson(res, 200, { ok: false, error: { code: outcome.code, message: outcome.message } })
+    sendJson(res, 200, {
+      ok: false,
+      error: {
+        code: outcome.code,
+        message: outcome.message,
+        // A `scope-missing` failure names what to authorize; the panel asks for
+        // exactly those scopes rather than a blanket grant.
+        ...(outcome.missingScopes === undefined ? {} : { missingScopes: [...outcome.missingScopes] }),
+      },
+    })
     return
   }
   sendJson(res, 200, { ok: true, ...wrap(outcome.value) })
@@ -266,6 +319,15 @@ export function registerLarkRoutes(ctx: Context): void {
   })
 
   /**
+   * Kill a login in flight when this plugin unloads.
+   *
+   * The completion child waits on a human for up to ten minutes, and the routes
+   * that could cancel it die with the plugin — so without this, unloading would
+   * leave a process holding a device code for a login nobody is watching.
+   */
+  ctx.effect(() => () => { cli.cancelLogin() }, 'dsh-web-ui: lark login cleanup')
+
+  /**
    * Wrap a handler so one throwing route cannot take the carrier down.
    * @param label - the route's name, for the log line.
    * @param handler - the route body.
@@ -310,6 +372,101 @@ export function registerLarkRoutes(ctx: Context): void {
       user: value.user ?? null,
     }))
   }, 'state')
+
+  /**
+   * Begin a Feishu login for the scopes a call asked for.
+   *
+   * The body is optional: an empty one logs in for this deployment's own scope
+   * set (`DEFAULT_LOGIN_SCOPES`), which is what the panel sends when the failure
+   * did not name any. A scope that arrives with the request is validated here as
+   * well as in the adapter, because it is the one field of a login that becomes
+   * an argv element.
+   */
+  route(LOGIN_PATH, async (req, res) => {
+    if (req.method !== 'POST') { sendMethodNotAllowed(res, 'POST'); return }
+    const body = await readJsonBody(req, { allowEmpty: true })
+    if (!body.ok) {
+      sendJson(res, 400, { ok: false, error: { code: 'bad-request', message: body.message } })
+      return
+    }
+    const payload = body.value
+    let scopes: readonly string[] | undefined
+    if (payload !== undefined) {
+      const requested = typeof payload === 'object' && payload !== null
+        ? (payload as Record<string, unknown>)['scopes']
+        : undefined
+      if (requested !== undefined) {
+        if (!Array.isArray(requested) || requested.some(scope => typeof scope !== 'string' || !SCOPE_PATTERN.test(scope))) {
+          sendJson(res, 400, {
+            ok: false,
+            error: {
+              code: 'bad-request',
+              message: '`scopes` must be an array of Feishu scope names, e.g. ["space:document:retrieve"]',
+            },
+          })
+          return
+        }
+        scopes = requested as readonly string[]
+      }
+    }
+    sendOutcome(res, await cli.startLogin(scopes), value => ({
+      verificationUrl: value.verificationUrl,
+      // The image changes with every session, so the URL that carries it does
+      // too: a browser cache would otherwise hand back the previous QR.
+      qrUrl: `${LOGIN_QR_PATH}?t=${String(value.startedAt)}`,
+      expiresIn: value.expiresIn,
+      scopes: [...value.scopes],
+    }))
+  }, 'login')
+
+  /**
+   * Where the login stands.
+   *
+   * Polled rather than pushed: the flow's only progress signal is the CLI child
+   * exiting, and the panel already polls the panel's other reads. A finished
+   * login is reported as such until the next start, so a page reloaded mid-flow
+   * still learns that it succeeded.
+   */
+  route(LOGIN_STATUS_PATH, async (req, res) => {
+    if (req.method !== 'GET') { sendMethodNotAllowed(res, 'GET'); return }
+    sendJson(res, 200, { ok: true, ...cli.loginStatus() })
+  }, 'login status')
+
+  /**
+   * The QR image of the login in flight.
+   *
+   * Its own route because a browser can only display an image it can fetch: the
+   * host holds the PNG the CLI rendered, and this is the only way for the panel
+   * to show it without also handling the file's path.
+   */
+  route(LOGIN_QR_PATH, async (req, res) => {
+    if (req.method !== 'GET') { sendMethodNotAllowed(res, 'GET'); return }
+    const image = await cli.loginQr()
+    if (!image.ok) {
+      sendJson(res, 404, { ok: false, error: { code: image.code, message: image.message } })
+      return
+    }
+    res.writeHead(200, {
+      'content-type': 'image/png',
+      'content-length': image.value.byteLength,
+      'cache-control': 'no-store',
+    })
+    res.end(image.value)
+  }, 'login qr')
+
+  /**
+   * Give up on the login in flight.
+   *
+   * Cancelling kills the CLI child, which matters beyond tidiness: it holds a
+   * device code that would otherwise stay live for its full ten minutes, and the
+   * CLI's codes are one-shot, so leaving it running would collide with the next
+   * login the operator starts.
+   */
+  route(LOGIN_CANCEL_PATH, async (req, res) => {
+    if (req.method !== 'POST') { sendMethodNotAllowed(res, 'POST'); return }
+    cli.cancelLogin()
+    sendJson(res, 200, { ok: true, phase: 'idle' })
+  }, 'login cancel')
 
   /**
    * Resolve which archive folder belongs to one project.
@@ -592,6 +749,60 @@ export function registerLarkRoutes(ctx: Context): void {
     log.info(`recorded the project \`${stored.name}\` (${stored.background})`)
     sendJson(res, 200, { ok: true, project: stored })
   }, 'project')
+
+  route(PROJECT_STAGE_PATH, async (req, res) => {
+    if (req.method !== 'POST') { sendMethodNotAllowed(res, 'POST'); return }
+    const body = await readJsonBody(req)
+    if (!body.ok) {
+      sendJson(res, 400, { ok: false, error: { code: 'bad-request', message: body.message } })
+      return
+    }
+    const input = typeof body.value === 'object' && body.value !== null
+      ? body.value as Record<string, unknown>
+      : {}
+    const path = input['path']
+    const name = input['name']
+    const stage = input['stage']
+    if (typeof path !== 'string' || path.trim() === '') {
+      sendJson(res, 400, { ok: false, error: { code: 'bad-request', message: '`path` must be a non-empty string' } })
+      return
+    }
+    if (typeof name !== 'string' || name.trim() === '') {
+      sendJson(res, 400, { ok: false, error: { code: 'bad-request', message: '`name` must be a non-empty string' } })
+      return
+    }
+    // A node this build does not know is REFUSED rather than stored: it would be
+    // a position the flow cannot draw and the next move cannot step from.
+    if (!isFlowStageId(stage)) {
+      sendJson(res, 400, {
+        ok: false,
+        error: {
+          code: 'bad-request',
+          message: `\`stage\` must be one of: ${FLOW_STAGE_IDS.join(', ')}`,
+        },
+      })
+      return
+    }
+    const result = await projects.setStage({ path, name: name.trim(), stage })
+    if (!result.ok) {
+      // 409, not 400: the request was well formed, and what refused it is the
+      // project's own position — which the answer carries, so the page can
+      // correct itself without a second read.
+      const reachable = nextStageId(result.from)
+      log.info(`refused the FDE move to \`${stage}\` for \`${path}\` (it is at \`${result.from}\`)`)
+      sendJson(res, 409, {
+        ok: false,
+        error: {
+          code: result.code,
+          message: `the FDE flow moves one node at a time: from \`${result.from}\` the only node it may enter is \`${reachable ?? 'none'}\``,
+        },
+        project: result.record,
+      })
+      return
+    }
+    log.info(`recorded the FDE node \`${stage}\` for \`${path}\``)
+    sendJson(res, 200, { ok: true, project: result.record })
+  }, 'project-stage')
 
   route(CARDS_PATH, async (req, res) => {
     if (req.method !== 'GET') { sendMethodNotAllowed(res, 'GET'); return }

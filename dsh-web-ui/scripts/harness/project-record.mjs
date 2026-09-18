@@ -1,12 +1,13 @@
 /**
- * Offline harness for the project RECORD: the store and its two routes.
+ * Offline harness for the project RECORD: the store and its three routes.
  *
  * The record is the plugin's own persisted state — the answers a DSH workspace
- * has no field for (product background, product card) plus a copy of the name —
- * and it is the one thing here that outlives the process. So this harness drives
- * the REAL route registration against a fake webserver, with the document pinned
- * to a temporary file (`DSH_WEB_UI_PROJECTS_FILE`), and checks the properties a
- * reviewer would otherwise have to trust:
+ * has no field for (product background, product card) plus a copy of the name, the
+ * project's Feishu folder, and its NODE in the FDE delivery flow — and it is the
+ * one thing here that outlives the process. So this harness drives the REAL route
+ * registration against a fake webserver, with the document pinned to a temporary
+ * file (`DSH_WEB_UI_PROJECTS_FILE`), and checks the properties a reviewer would
+ * otherwise have to trust:
  *
  * 1. the document lands where it says it does, and reading it back round-trips;
  * 2. a project with no record yet answers `null`, not an invented one;
@@ -15,7 +16,12 @@
  * 4. a write replaces the project's FORM facts and stamps it, a bad request never
  *    reaches the file, and the Feishu folder the record also carries — which the
  *    form knows nothing about — survives that write;
- * 5. the card catalogue: an empty deployment says "none configured", a broken one
+ * 5. the flow's NODE, which is the one fact here the HOST judges rather than
+ *    stores: the first registration may name any node, every move after it is
+ *    exactly one step (a jump and a step back are both refused, and a refusal does
+ *    not write a byte), re-recording where the project already is is a success that
+ *    writes nothing, and a form write keeps the node it does not carry;
+ * 6. the card catalogue: an empty deployment says "none configured", a broken one
  *    says so, and a duplicate id is refused rather than silently collapsed.
  *
  * Usage: node scripts/harness/project-record.mjs
@@ -46,6 +52,8 @@ async function collectRoutes() {
 const handlers = await collectRoutes()
 const project = handlers.get('/dsh-web-ui/lark/project')
 const cards = handlers.get('/dsh-web-ui/lark/cards')
+const stage = handlers.get('/dsh-web-ui/lark/project/stage')
+const STAGE_PATH = '/dsh-web-ui/lark/project/stage'
 
 /** One synthetic request. */
 function request({ method = 'GET', url = '/dsh-web-ui/lark/project', body = undefined } = {}) {
@@ -239,6 +247,122 @@ check('the inline environment catalogue wins over the file',
   fromEnv.body.cards.length === 1 && fromEnv.body.cards[0].id === 'env',
   JSON.stringify(fromEnv.body))
 delete process.env['DSH_WEB_UI_PRODUCT_CARDS']
+
+// 8. The FDE flow's NODE — the one fact about a project that used to live only in
+//    a browser's `localStorage`. It is stored on this same record, and what
+//    matters is the RULE the host enforces on the way in: the flow is walked one
+//    node at a time, EXCEPT while nothing has been recorded yet, because the
+//    first registration is how a project picked up mid-delivery (or one whose
+//    node only ever existed in a browser) gets to say where it stands. After
+//    that there is no exception, and a refused move is not a write at all.
+const postStage = (body) => call(stage, { method: 'POST', url: STAGE_PATH, body: JSON.stringify(body) })
+
+// The exemption: a project this store has never heard of, and a project it has.
+const registered = await postStage({ path: '/work/midflight', name: '中途接入', stage: 'development' })
+check('a project with no record may register any node as its first',
+  registered.status === 200 && registered.body.ok === true && registered.body.project?.stage === 'development',
+  JSON.stringify(registered.body))
+const registration = await call(project, { url: '/dsh-web-ui/lark/project?path=%2Fwork%2Fmidflight' })
+check('a node recorded on its own still leaves a usable record behind',
+  registration.body.project?.name === '中途接入'
+  && registration.body.project?.background === 'unsure'
+  && registration.body.project?.stage === 'development',
+  JSON.stringify(registration.body))
+
+await call(project, {
+  method: 'POST',
+  body: JSON.stringify({ path: '/work/recorded', name: 'R', background: 'existing', productCardId: 'card-acf' }),
+})
+const nodeLess = await call(project, { url: '/dsh-web-ui/lark/project?path=%2Fwork%2Frecorded' })
+check('a record with no node stored reads as "nothing recorded yet", not as the first node',
+  nodeLess.body.project?.stage === null, JSON.stringify(nodeLess.body.project))
+const adoptedNode = await postStage({ path: '/work/recorded', name: 'R', stage: 'done' })
+check('the first registration of a project that already has a record is exempt too',
+  adoptedNode.status === 200 && adoptedNode.body.project?.stage === 'done',
+  JSON.stringify(adoptedNode.body))
+
+// …and the exemption is spent by that first registration.
+await postStage({ path: '/work/steps', name: 'S', stage: 'requirement' })
+const stepped = await postStage({ path: '/work/steps', name: 'S', stage: 'design' })
+check('the next node is reachable', stepped.status === 200 && stepped.body.project?.stage === 'design',
+  JSON.stringify(stepped.body))
+
+const settled = await readFile(FILE, 'utf8')
+const same = await postStage({ path: '/work/steps', name: 'S', stage: 'design' })
+check('re-recording the node already recorded is a success, not an error',
+  same.status === 200 && same.body.project?.stage === 'design', JSON.stringify(same.body))
+check('re-recording the node already recorded does not write the document',
+  await readFile(FILE, 'utf8') === settled)
+
+const skipped = await postStage({ path: '/work/steps', name: 'S', stage: 'deploy' })
+check('a node two steps ahead is refused',
+  skipped.status === 409 && skipped.body.ok === false && skipped.body.error?.code === 'not-next',
+  JSON.stringify(skipped.body))
+// The node it may enter, NOT the one it asked for: the refusal names what the
+// flow allows ("development"), which is what makes it actionable.
+check('a refusal names the node the flow may go to instead',
+  typeof skipped.body.error?.message === 'string'
+  && skipped.body.error.message.includes('development')
+  && !skipped.body.error.message.includes('deploy'),
+  JSON.stringify(skipped.body.error))
+check('a refusal answers with the node as it stands, so the page can put itself right',
+  skipped.body.project?.stage === 'design', JSON.stringify(skipped.body.project))
+check('a refused skip writes nothing at all', await readFile(FILE, 'utf8') === settled)
+
+const backward = await postStage({ path: '/work/steps', name: 'S', stage: 'requirement' })
+check('an earlier node is refused too: the flow records work that was DONE',
+  backward.status === 409 && backward.body.error?.code === 'not-next'
+  && JSON.parse(await readFile(FILE, 'utf8')).projects['/work/steps']?.stage === 'design',
+  JSON.stringify(backward.body))
+
+// Malformed requests are refused by NAME, and none of them reaches the document.
+const noNode = await postStage({ path: '/work/steps', name: 'S' })
+check('a write with no node is refused, naming the field',
+  noNode.status === 400 && noNode.body.error?.code === 'bad-request'
+  && (noNode.body.error?.message ?? '').includes('stage'),
+  JSON.stringify(noNode.body))
+const unknownNode = await postStage({ path: '/work/steps', name: 'S', stage: 'shipping' })
+check('a node this build does not know is refused rather than stored',
+  unknownNode.status === 400 && (unknownNode.body.error?.message ?? '').includes('stage'),
+  JSON.stringify(unknownNode.body))
+const noNodePath = await postStage({ name: 'S', stage: 'design' })
+check('a node write without a path is refused',
+  noNodePath.status === 400 && noNodePath.body.error?.code === 'bad-request', JSON.stringify(noNodePath.body))
+const noNodeName = await postStage({ path: '/work/steps', stage: 'design' })
+check('a node write without a name is refused',
+  noNodeName.status === 400 && noNodeName.body.error?.code === 'bad-request', JSON.stringify(noNodeName.body))
+check('no malformed node request touched the document', await readFile(FILE, 'utf8') === settled)
+const nodeWrongMethod = await call(stage, { method: 'GET', url: STAGE_PATH })
+check('the node route takes a POST and says so',
+  nodeWrongMethod.status === 405, String(nodeWrongMethod.status))
+
+// The node lives on the record, so every OTHER writer of that record has to keep
+// it — the same property the Feishu folder has (see section 5).
+await call(project, {
+  method: 'POST',
+  body: JSON.stringify({ path: '/work/steps', name: 'S 二期', background: 'new' }),
+})
+const afterForm = await call(project, { url: '/dsh-web-ui/lark/project?path=%2Fwork%2Fsteps' })
+check('a form write keeps the node it does not carry',
+  afterForm.body.project?.name === 'S 二期' && afterForm.body.project?.stage === 'design',
+  JSON.stringify(afterForm.body.project))
+
+// A document written before nodes were stored is not a broken document.
+await writeFile(FILE, JSON.stringify({
+  version: 1,
+  projects: {
+    '/work/handwritten': { path: '/work/handwritten', name: '手写', background: 'new', productCardId: '', updatedAt: 1 },
+  },
+}))
+const handwritten = await call(project, { url: '/dsh-web-ui/lark/project?path=%2Fwork%2Fhandwritten' })
+check('a record from before nodes existed reads as "no node", not as a failure',
+  handwritten.status === 200 && handwritten.body.project?.name === '手写'
+  && handwritten.body.project?.stage === null,
+  JSON.stringify(handwritten.body.project))
+const handwrittenNode = await postStage({ path: '/work/handwritten', name: '手写', stage: 'acceptance' })
+check('a record from before nodes existed may still register one as its first',
+  handwrittenNode.status === 200 && handwrittenNode.body.project?.stage === 'acceptance',
+  JSON.stringify(handwrittenNode.body))
 
 // A wrong method is refused with the methods it does accept.
 const wrongMethod = await call(project, { method: 'DELETE' })

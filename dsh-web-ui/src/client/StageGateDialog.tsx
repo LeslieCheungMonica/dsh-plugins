@@ -45,7 +45,7 @@ import {
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 import { NS } from './contract.ts'
-import { STAGE_KEYS, DEFAULT_STAGE } from './stage.ts'
+import { DEFAULT_STAGE, stageKeyAt } from './stage.ts'
 import { checkStageGate, confirmStageGate, type StageGateFailure } from './stagegateapi.ts'
 import type {
   StageGateItemId, StageGateItemResult, StageGateItemSource, StageGateReport,
@@ -156,7 +156,10 @@ export function StageGateDialog({ open, path, to, onPassed, onClose, openInSideb
 
   if (!open) return null
 
-  const stageKey = STAGE_KEYS[to] ?? STAGE_KEYS[DEFAULT_STAGE]
+  // The node this dialog guards the ENTRY to, in the operator's words. `stageKeyAt`
+  // is total: a transition to a position outside the flow names the first node
+  // rather than rendering nothing (see stage.ts).
+  const stageKey = stageKeyAt(to)
   const manualItems = report?.confirmations ?? []
   const itemResult = (id: StageGateItemId): StageGateItemResult | undefined =>
     report?.items.find(item => item.id === id)

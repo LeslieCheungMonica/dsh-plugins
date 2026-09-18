@@ -130,13 +130,27 @@ every node, so nothing can go inconsistent:
   open and re-states the flow around the move, which is the feedback for the click.
 - **A gated transition is checked before it moves** — see
   [The FDE stage gate](#the-fde-stage-gate) below.
-- **The stage is per PROJECT**, keyed by workspace id in `localStorage`, for the
-  same reason the project selection is a client fact: nothing on the host records
-  delivery progress, and inventing a record would make the tag claim work the
-  operator has not done here. A project with no record starts at 需求明确. A
-  record the plugin cannot trust — a truncated write, a hand-edited value, a stage
-  index that no longer exists — degrades to the first stage and is repaired by the
-  next click, never by an error.
+- **The node is per PROJECT, and the HOST keeps it.** It lives on the project's own
+  record (`~/.dsh/storages/web_ui_projects.json`, keyed by the project's directory —
+  see [The project record](#editing-a-project)), alongside the Feishu folder and the
+  gate's manual answers, and it is moved through `POST /project/stage`. It used to be
+  a `localStorage` note in one browser, which is exactly what it read like: a reload
+  kept it, another browser did not, and correcting a mistake meant opening devtools.
+  It is stored by the node's stable ID (`src/shared/stageflow.ts`) rather than by its
+  position, so inserting a node into the flow cannot silently change what a stored
+  value means.
+- **The flow's RULE is enforced by the host, and drawn by the browser.** The browser
+  derives every row from one index (`stage.ts`); the host refuses a move that is not
+  exactly the next node, so a record cannot be talked into a jump by a stale page or
+  a hand-written request. The one exemption is the FIRST REGISTRATION: a project with
+  no node recorded may name any node, because a project can be picked up mid-delivery
+  — and that is also how a node that only ever existed in a browser arrives there. A
+  node this plugin cannot read is a STATE of its own, never the first node: the tag
+  says it could not read the node, the flow renders inert, and a retry is offered.
+- **A move the host refuses is shown, not swallowed.** The tag ends up where the host
+  says the project is — not where it thought it was — with the host's own reason
+  beside the flow, because a page that kept the node it clicked would be displaying a
+  delivery position the record does not hold.
 - **In the rail** the tag becomes a 36px square carrying the ring alone (no words
   fit in the track), and its `aria-label` still names the stage and the step, so
   collapsing the column hides the flow's words without losing the flow.
@@ -180,7 +194,8 @@ unreached nodes first came out as a smudge, which is how this was found:
 `--dsw-alias-label-dimmed` is for text on a FILLED surface; on a plain card it is
 close to invisible, in both themes. The floors (4.5:1 for words, 3:1 for the
 flow's unreached boundaries) are asserted by `measure-stage-tag.mjs` in both
-themes, so a token swap cannot quietly undo this.
+themes — including the two lines that arrived with the host-backed node — so a
+token swap cannot quietly undo this.
 
 ## The FDE stage gate
 
@@ -292,48 +307,97 @@ created or associated in the panel below.
 
 ## The git drawer
 
-The frame carries an **action row**: ONE horizontal strip of controls at the
-conversation header's right, sitting **above that header's hairline**.
+The frame carries an **action row**: ONE horizontal strip of controls in the
+viewport's top-right corner, joined to the panel toggles that live there.
 
 | Control | Owner | What it does |
 |---|---|---|
 | **Git** | this plugin | opens the drawer below — the branch / changes / history / journal panel for the current session's project |
-| **侧边栏** / **Sidebar** | `my-sider` | opens its docked web sidebar |
-| **下侧边栏** / **Bottom panel** | `my-sider` | opens its bottom command panel |
+| **侧边栏** / **Sidebar** | `better-sidebar` | opens its docked right sidebar |
+| **下侧边栏** / **Bottom panel** | `better-sidebar` | opens its bottom command panel (desktop widths only) |
+
+A deployment that mounts `my-sider` instead gets the same corner with *its* two
+toggles, rendered through the `shell.action` seat this row declares (below).
 
 ### Where the row sits, and why it is a row
 
-The line it sits above is `ui-conversation`'s own: the session header paints a 1px
-`::after` at `bottom: 1px`, measured at **y=74** at this frame's header height
-(12px top padding + a 32px title row + a 27px tab row). The row is 26px tall at
-top 40px, so its bottom edge lands at **66px** — all of it above that line, where
-before the Git control straddled it (52…78) and `my-sider`'s two toggles sat below
-it (88…114).
+**The row joins the corner cluster.** `better-sidebar` owns the viewport's
+top-right while it is on the page: its toggle cluster is `position: absolute` in a
+host it appends to `document.body`, at top 3px / right 10px, with 28px round
+buttons and a 4px gap — two of them at ≥768px, one below. The row's defaults
+mirror that band, so the corner reads as one line:
 
-Being one row with three owners is the part that needed a mechanism. Two
+```
+    ┌──────────┐ ┌────┐┌────┐
+    │   Git    │ │ ▤  ││ ▥  │   Git pill: 26px, top 4px, right 78px
+    └──────────┘ └────┘└────┘   toggles:   28px, top 3px, right 10px
+       8px gap ────┘     └─ 4px
+```
+
+Putting a 26px pill in a 28px band means sharing the centre line:
+`top: 3px + (28 − 26) / 2 = 4px`. The right inset is that plugin's 10px corner,
+plus its cluster's width (60px — 28px below its own 768px breakpoint, where it
+drops the bottom-panel toggle), plus an 8px gap.
+
+That arithmetic is the one thing this corner cannot do mechanically, and it is
+duplicated deliberately: a `position: fixed` element cannot ask another how wide
+it is. Both numbers come from `dsh-better-sidebar`'s own
+`src/client/sidebar.module.css` and are what to revisit if that plugin ever moves
+its cluster. The join itself is stated as a fact about the page —
+`:has([data-dsh-toggle-cluster])` — rather than as a flag some deployment has to
+keep in sync.
+
+**The corner also claims header space.** `better-sidebar` already makes the shipped
+session header's right-hand utilities yield to its cluster (`padding-right: 78px`
+while its panel is closed). Now that the Git pill lives in that same band, the
+plug-in extends the same reservation by the row's own width
+(`--dsh-web-ui-bar-width`) instead of letting Git sit on the session-log capsule.
+
+**With no such plugin the row is where it always was:** 26px tall at top 40px,
+immediately above `ui-conversation`'s own hairline — the 1px `::after` at
+`bottom: 1px`, measured at **y=74** at this frame's header height (12px top
+padding + a 32px title row + a 27px tab row). The row's bottom edge lands at
+**66px**, all of it above that line, where before the Git control straddled it
+(52…78) and the panel toggles sat below it (88…114).
+
+**One state the move did not change:** while `better-sidebar`'s right panel is
+open, the panel covers the row — the panel's host is z-index 25, the row is
+z-index 1 — even though that plugin keeps its own cluster visible over the panel.
+Making Git stay on top of an open panel would mean fighting a peer over its own
+chrome, which is not this plugin's to do.
+
+Being one row with several owners is the part that needed a mechanism. Two
 independently `position: fixed` bars cannot make one row: each would have to know
 the other's width to know where to start, and that arithmetic breaks silently the
 moment either gains a control — which this plugin's own history makes likely (the
 terminal control above is one flag away from returning). So **the ROW is owned
 here and the CONTROLS are not**: this plugin's ActionBar registration declares a
-`shell.action` list seat and renders it inside the strip, and `my-sider` renders
-its two toggles into it. Same move as `sidebar.account` and `sidebar.account.menu`
-(see [The account dock](#the-account-dock)), applied to the top-right corner.
+`shell.action` list seat and renders it inside the strip, and a peer that takes
+that seat renders its toggles into it. Same move as `sidebar.account` and
+`sidebar.account.menu` (see [The account dock](#the-account-dock)), applied to
+the top-right corner. `my-sider` is such a peer; `better-sidebar` is not — it
+positions its own cluster, which is exactly why joining it is the mirrored
+geometry described above rather than layout.
 
 Order is the row's, not the registrants': this plugin's own control is rendered
 first, so the strip reads left to right as "the frame's control, then the panels"
-whatever order the two plugins happened to activate in.
+whatever order the plugins happened to activate in.
 
-Three custom properties tune the strip, and all three are documented beside the
+Four custom properties tune the strip, and all four are documented beside the
 rules in `styles.ts`:
 
 | Property | Default | Meaning |
 |---|---|---|
-| `--dsh-web-ui-bar-top` | `40px` | the row's top edge |
-| `--dsh-web-ui-bar-right` | `24px` | its inset from the viewport's right edge |
+| `--dsh-web-ui-bar-top` | `40px` (`4px` joined) | the row's top edge |
+| `--dsh-web-ui-bar-right` | `24px` (`78px` joined, `46px` below 768px) | its inset from the viewport's right edge |
+| `--dsh-web-ui-bar-width` | `65px` | the row's own width, reserved to its right in the session header while the corner is occupied |
 | `--dsh-web-ui-bar-shift` | `0px` | space **reserved to its right** — added to the inset |
 
-The third one exists because the row's right edge belongs to whoever renders it,
+The joined values land on `--dsh-web-ui-bar-top-corner` /
+`--dsh-web-ui-bar-right-corner`, which the rules read as their *inner* fallback —
+so a deployment that sets either knob still wins, corner cluster or not.
+
+The last one exists because the row's right edge belongs to whoever renders it,
 so a peer whose docked panel covers that corner cannot move its own controls out
 of the way — it can only ask the whole row to step aside. `my-sider` writes it
 while its sidebar is open, and the whole strip (Git included) slides clear: the
@@ -359,7 +423,8 @@ single-ness is the design:
   hero renders the header as `display: none` — the state a brand-new project
   opens in — and a control that lived in the header would vanish exactly there.
   Reading the header's geometry is fine; *living* in it is not, which is why the
-  row is anchored to the header's hairline rather than rendered inside it.
+  row is positioned against the header's band — the corner cluster where one is
+  docked, the header's hairline otherwise — rather than rendered inside it.
 - **No shared state to lose.** With one registration the drawer's open flag is
   ordinary component state. An earlier two-trigger version needed a hand-rolled
   observable because the slot core refuses one store handle under two scopes
@@ -819,26 +884,48 @@ rate would be worse than no number). When there is no current session, or a sess
 that has billed nothing, the panel says that in words: a grid of zeros reads as a
 measurement.
 
-### Feishu links open in the GUI's web sidebar
+### Feishu links open in the GUI's sidebar
 
 Every Feishu link this plugin draws — a document row, a subfolder row, the
 project's folder strip, an ambiguous candidate, and the stage gate's evidence and
-report-folder buttons — opens **inside the GUI** when `my-sider`'s docked web
-sidebar is available, and in a new tab when it is not.
+report-folder buttons — opens **inside the GUI** when the deployment has a sidebar
+that can hold a page, and in a new tab when it does not.
 
-The link is a *capability*, not a dependency. `my-sider` provides
-`ctx.webSidebar` on the client (the cordis service seam — a client bundle may not
-import a peer's module), and this plugin reaches it through `ctx.inject`, so a
-deployment without that plugin has no service, opens tabs, and loses nothing else.
-`openInSidebar(url)` answers whether a **mounted** sidebar took the request, and
-that boolean is the whole point of the contract: without it, a missing launcher
-would turn a document click into nothing at all, which reads as a broken link.
+Two peers can hold that sidebar, and a deployment has either:
 
-The new tab in the sidebar loads the address **directly**, not through the relay:
-the reader is signed in to Feishu in their own browser, and only a same-site frame
-carries that session. (The relay fetches anonymously by design, so relaying a
-private document could only ever show Feishu's login page.) Chromium was measured
-not to refuse framing Feishu, which is what makes a direct frame viable here.
+| Peer | What it provides | How this plugin opens a link in it |
+|---|---|---|
+| `my-sider` | `ctx.webSidebar` | `open(url)` — already answers whether its docked panel took it |
+| `better-sidebar` | `ctx.betterSidebar` | `openTab({ type: 'browser', url, title: hostname })` — its in-sidebar browser tab |
+
+The link is a *capability*, not a dependency. Both services are reached by cordis
+service NAME through `ctx.inject` (a client bundle may not import a peer's
+module), so a deployment with neither has no service, opens tabs, and loses
+nothing else. `openInSidebar(url)` answers whether a **mounted** sidebar took the
+request, and that boolean is the whole point of the contract: without it, a
+missing sidebar would turn a document click into nothing at all, which reads as a
+broken link.
+
+`better-sidebar`'s `openTab` is the one that needs care, because it answers
+nothing and refuses **quietly**: a browser tab switched off in its settings, and a
+deployment whose sidebar has no active session to land a tab in, both drop the
+open without a word. Its adapter therefore asks `isTabEnabled('browser')` and the
+snapshot's `sessionId` first and reports the refusal as `false`, which sends the
+caller to a new tab rather than to a dead click (see `src/client/sidebarLink.ts`,
+pinned by `pnpm harness:sidebar-link`). Note also that its own link takeover — the
+`browserInterceptLinks` / `browserInterceptHttps` settings that route external
+links in the chat into the sidebar — cannot cover these links: it watches anchor
+clicks, and these rows are `<button>`s by design, so this capability is the only
+way they reach a sidebar.
+
+The sidebar tab loads the address **directly**, not through the relay: the reader
+is signed in to Feishu in their own browser, and only a same-site frame carries
+that session. (The relay fetches anonymously by design, so relaying a private
+document could only ever show Feishu's login page.) Chromium was measured not to
+refuse framing Feishu, which is what makes a direct frame viable here. Should a
+tenant ever answer `X-Frame-Options`/`frame-ancestors`, the sidebar tab reports
+that as its own state, with the escape hatches its plugin offers (load anyway, or
+open in the system browser).
 
 ### File names open in the GUI's web sidebar
 
@@ -1504,7 +1591,8 @@ needs `dsh web` restarted before the new code is live.
 node scripts/smoke-git.mjs                            # the git drawer: routes + DOM, no GUI needed
 pnpm harness:folder-route                             # the Feishu folder routes, no GUI needed
 pnpm harness:stage-gate                               # the FDE stage gate's route, no GUI needed
-pnpm harness:project-record                           # the project record (incl. its Feishu folder), no GUI needed
+pnpm harness:project-record                           # the project record (its Feishu folder AND its FDE node), no GUI needed
+pnpm harness:stage-tag                                # the FDE flow node: host read, move, migration, no GUI needed
 pnpm harness:new-project-form                         # the New Project form, no GUI needed
 pnpm harness:lark-panel                               # the Feishu folder panel, no GUI needed
 pnpm harness:account-dock                             # the account dock + the usage figures, no GUI needed
@@ -1579,7 +1667,8 @@ matters here because this deployment's GUI sits behind the QR login gate:
 | Command | What it pins down |
 |---|---|
 | `pnpm harness:stage-gate` | the FDE stage gate's routes, driven through the real registration against a stubbed `lark-cli` holding a folder TREE, a signed-in operator, and a REAL workspace directory built per scenario: the method guards and every malformed request (a missing path, `to=abc`, `to=1.5`, a stage that carries no gate — the terminal node — and a confirmation for a FOLDER item), a folder that satisfies all three outputs **still BLOCKING while the manual item is unanswered**, confirming recording a citation naming the operator the HOST resolved (and a blank citation rather than a refusal when nobody is signed in), withdrawing DELETING the entry, the answer surviving the edit form's own write, **each of the four gates down the flow** (详细设计, the self-test pair, the test pair, and 上线实施文档 + 安装包) with the rules that make the installer check mean something (a 0-byte file is not a build, a pruned `node_modules`/`.git` is not the project, a name with no useful extension still counts, an unreadable workspace is a state and not an absent file), the workspace half reported even when the folder half cannot be resolved, outputs found at depth and matched case-insensitively, the FIRST breadth-first match being the evidence, both walks' bounds (`truncated`), a missing output BLOCKING with the others still reporting, the unanswerable arms (`no-folder` and `ambiguous-folder` — neither of which adopts or writes anything, against exactly-one-match adoption, which does), and the rule that the check creates nothing and never rewrites the record |
-| `pnpm harness:project-record` | the project record's storage and routes: a write round-trips through the pinned document, a project with no record answers `null`, the Feishu folder a form write does not carry SURVIVES that write, a record from before folders existed reads as "no folder", a malformed/empty/future-versioned document degrades to "no records" and is repaired by the next write, a bad request never touches the file (and is a 400), and the card catalogue distinguishes "none configured" from "broken" and refuses duplicate ids |
+| `pnpm harness:project-record` | the project record's storage and routes: a write round-trips through the pinned document, a project with no record answers `null`, the Feishu folder a form write does not carry SURVIVES that write, **and so does the FDE flow NODE** (the same property, asserted on the node's own route), a record from before folders existed reads as "no folder", a malformed/empty/future-versioned document degrades to "no records" and is repaired by the next write, a bad request never touches the file (and is a 400), and the card catalogue distinguishes "none configured" from "broken" and refuses duplicate ids. **The node's own rule, over `POST /project/stage`:** a project with no record — and a record with no node — may register ANY node as its first (the exemption, and the migration's only door), the next node is then reachable, re-recording the node already recorded is a success that does **not write the document at all**, a node two steps ahead AND a node one step back are both refused as `not-next` with the node it may enter and the record as it stands, and a refusal leaves the file byte-for-byte untouched (not merely the parsed value unchanged); an unknown node, a missing node, a missing path and a missing name are each a 400 naming the field; a document written before nodes existed still loads and may still register one; and `GET /project` carries the node, reading "nothing recorded" as `null` rather than as the first node |
+| `pnpm harness:stage-tag` | the FDE tag itself, driven in jsdom by real clicks against a scripted host, because the node is the host's now: a tag that has not read yet claims NO node (no `data-step`, an empty ring, an inert flow) and says so; the node shown is the **host's**, not the one this browser remembered; the read names the project by PATH; a move is a `POST` carrying the path, the name and the NODE ID (never a position), and the tag adopts the host's ANSWER even when the host answers a different node than the one clicked; a GATED node opens the gate dialog and writes nothing; a REFUSED move (the project moved under the page) puts the tag where the host says it is — resyncing by re-reading — and explains itself in the host's own words; an unreadable node is a state with a retry, not the first node; no project selected asks the host NOTHING and moves nothing; and the migration: a node that only ever existed in this browser is registered ONCE, as the host's first registration, and never offered again once the host has one |
 | `pnpm harness:folder-route` | the hosts's folder routes: the methods, 400s for every malformed request (a path-shaped name, an argv-shaped token, a non-http URL — none of which reach the CLI), the folder named from the request's `name` (the project's name) with the path's segment as the fallback, **exactly one create and ZERO parent-folder reads** per create (the create-only rule, asserted rather than assumed), the deployment's parent token travelling to the CLI even when the request names another, a create RECORDING the folder and a recorded folder answered with no listing at all, all four resolution outcomes (`record`/`adopted`/`missing`/`ambiguous`) including that adoption is written once and ambiguity writes nothing, the listing's page and its folder token inside the command's `--params`, and a Feishu failure — including a missing scope — answered as 200/`ok:false` |
 | `pnpm harness:folder-flow` | the browser flow: the exact request it sends (path **and** project name), that the session opens **before** the folder call, that a success leaves the sidebar strip EMPTY and announces itself through the system banner (re-announced on a repeat run), that a failure goes to the strip and NOT to the banner, every failure sentence read from the real dictionary, and that no dedup copy is reachable any more |
 | `pnpm harness:new-project-form` | the form itself, driven by clicks in jsdom: what it asks for, that opening it touches nothing, the product-card row appearing for `已有产品` and for nothing else (fed by the host's catalogue, which this harness answers), the folder field falling back to the browser on a host with no native chooser, the draft surviving that round trip, what the submission sends — and EDIT mode end to end: the prefill from the record, the read-only directory, the save reaching both `workspace.rename` and the record |
@@ -1701,22 +1790,34 @@ something does not change a card's height.
 one difference that matters: it renders the REAL component (`stage-tag-entry.tsx`,
 bundled by `stage-tag.mjs` with the primitives aliased to the checkout's own
 source, so the shipped icons and the shipped placement hook are what run), serves
-it over HTTP — a `file://` origin refuses `localStorage`, and the tag's stage lives
-there — and then seeds a stage and drives it. It asserts the whole positional
+it over HTTP, and plays the whole HOST the tag now needs — `GET /project` answers a
+record standing at the node a scenario seeds, `POST /project/stage` records a move,
+and two scenarios script the faults (a 500 for the read, a 409 for the move) that a
+real host can produce. It asserts the whole positional
 contract per scenario (which nodes are checked, which one is running, which are
 grey), the rail's geometry down to the node centres, the placement and
 clamping of the portaled panel, that Escape and an outside click close it, that a
 rail tag still announces the stage it no longer spells out, that the dark theme
-re-tints the flow, and that an unreadable stored record degrades to the first stage
-and is repaired by the next click.
+re-tints the flow, that a click's node survives a RELOAD (the property the host-side
+record exists for), and the two states that arrived with it: a node that cannot be
+READ (no node claimed at all, an empty ring, an inert flow, the reason in a card, and
+a retry that reads the node once the host answers again — screenshotted as
+`stage-tag-unreadable.png`) and a move the host REFUSES (the tag ends where the host
+says the project is, with the reason quoted beside the flow — `stage-tag-refused.png`).
+The browser's own old note is measured too, in both directions: it is registered
+once when the host has no node, and it never outweighs one the host has.
 
 There is also a READABILITY half, because the panel is made of words and one of
 them cannot be checked by eye from a test runner: the contrast of every stage name
 and status word against the row it sits on is computed (WCAG, a translucent
 foreground composited over its backdrop first) and floored at 4.5:1, in BOTH
 themes, along with a 3:1 floor for the flow's unreached boundaries — the rail, the
-hollow markers, and the end's second ring. That is the check the first version of
-this panel failed at 1.26:1; see [Why the greys are the greys](#why-the-greys-are-the-greys).
+hollow markers, and the end's second ring — and the same 4.5:1 floor for the two new
+lines the host-backed node put in the panel: why nothing can move, and what the host
+said about a refused move. That is the check the first version of this panel failed
+at 1.26:1, and it is the check that caught the state card's own first colouring
+(amber on amber, 2.58:1) before anybody shipped it; see
+[Why the greys are the greys](#why-the-greys-are-the-greys).
 
 Its server also ANSWERS THE GATE'S TWO ROUTES, per scenario, which is what makes
 the flow's second positional rule measurable end to end: that a node two steps ahead
@@ -1799,7 +1900,7 @@ back afterwards).
 | The command bar (panel, currently unmounted) | `src/client/TerminalBar.tsx` (+ `src/client/termapi.ts`) |
 | The command runner (spawn, sandbox, output window) | `src/host/term.ts`, config in `readTerminalOptions` |
 | The command bar's routes | `src/host/term-routes.ts` (+ the shared HTTP plumbing in `src/host/http.ts`) |
-| Row offsets, button chrome | `src/client/styles.ts`, `[data-wui='actionBar']` / `[data-wui='actionButton']`; the `--dsh-web-ui-bar-top` / `--dsh-web-ui-bar-right` / `--dsh-web-ui-bar-shift` custom properties |
+| Row offsets, button chrome | `src/client/styles.ts`, `[data-wui='actionBar']` / `[data-wui='actionButton']`; the `--dsh-web-ui-bar-top` / `--dsh-web-ui-bar-right` / `--dsh-web-ui-bar-width` / `--dsh-web-ui-bar-shift` custom properties, and the `--dsh-web-ui-bar-*-corner` defaults that join the row to the corner cluster |
 | The git write/serve half | `src/host/git.ts` (argv building, parsing, journal), `src/host/git-routes.ts` |
 | The git wire contract (both halves) | `src/shared/gitwire.ts` |
 | Which verbs the drawer offers | `buildAction()` in `src/host/git.ts`, and the per-row menus in `GitBranches.tsx` |
@@ -1967,12 +2068,16 @@ working.
   makes it auditable — but nobody upstream verifies the conversation happened. It is
   also asked PER PROJECT and does not expire: an old confirmation still counts, and
   the dialog's 撤销确认 button is the way to withdraw one.
-- **The FDE flow only moves forward, one node at a time.** A stage behind the
-  current one is locked, so a project that reaches 完成 cannot be walked back to an
-  earlier stage from the panel; correcting a mistaken advance means editing the
-  `dsh-web-ui.fde-stage` record in `localStorage` (or starting the project's record
-  over). That is the deliberate reading of "no skipping": the flow records work that
-  was DONE, so a backward move would un-record it.
+- **The FDE flow only moves forward, one node at a time.** A node behind the
+  current one is locked, and the HOST refuses the write as well, so a project that
+  reaches 完成 cannot be walked back to an earlier node; correcting a mistaken
+  advance means editing the `stage` field of the project's record in
+  `~/.dsh/storages/web_ui_projects.json` (or `DSH_WEB_UI_PROJECTS_FILE`, when it is
+  pinned) — a plain JSON document, which is what the record was designed to be. The
+  one write the host accepts without a position to step from is the FIRST
+  REGISTRATION: a project with nothing recorded may name any node, once. That is the
+  deliberate reading of "no skipping": the flow records work that was DONE, so a
+  backward move would un-record it.
 - **完成 is a recorded position, not a delivered artifact.** It is the flow's last
   node and it says the operator considers the delivery handed over; nothing checks
   that it was, and no gate guards it (the one gate in this deployment guards the

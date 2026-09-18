@@ -50,6 +50,26 @@
  * panel is not inside the trigger's subtree any more. The shared
  * `useDismissOnOutsidePointer` takes a single root and would therefore close the
  * panel on every click INSIDE it, so the two-ref check is written out here.
+ *
+ * ## The node is the HOST's, so every move is a round trip
+ *
+ * The node is persisted on the project's record (`src/host/projects.ts`), which is
+ * what makes it outlive one browser, and it is why this component can no longer
+ * decide anything about it on its own:
+ *
+ * - the node is READ for the selected project, and re-read when the selection
+ *   changes — the tag is never allowed to carry one project's node across to
+ *   another, and a node that could not be read is a STATE of its own, never the
+ *   first node (see `StageRead`);
+ * - a move is a WRITE the host may refuse. What the tag shows afterwards is the
+ *   host's record, not the row that was clicked: a kept click would display a
+ *   delivery position the record does not hold, which is the one thing persisting
+ *   it here is for. A refusal is also not an error to swallow — it is a sentence
+ *   next to the flow, in the panel the operator is looking at;
+ * - this browser's OLD note (`legacyStageIndexOf`) is read once, only while the
+ *   host holds no node for the project, and sent as the host's first registration.
+ *   That is the whole migration, and it happens before the tag shows anything, so
+ *   a project mid-delivery does not lose its place.
  */
 import { useEffect, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
@@ -61,11 +81,14 @@ import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 import { NS } from './contract.ts'
 import {
   DEFAULT_STAGE, STAGE_COUNT, STAGE_KEYS,
-  canEnterStage, isFinalStage, isStageLocked, readStage, stageStateAt, stageStatusKey, writeStage,
+  canEnterStage, isFinalStage, isStageLocked, legacyStageIndexOf, stageKeyAt, stageStateAt,
+  stageStatusKey,
 } from './stage.ts'
 import type { StageState } from './stage.ts'
 import { StageGateDialog } from './StageGateDialog.tsx'
+import { readProjectRecord, writeProjectStage } from './larkapi.ts'
 import { gateForEntryStage } from '../shared/stagegatewire.ts'
+import { stageAt, stageIndexOf } from '../shared/stageflow.ts'
 
 /** The translator seat this plugin's copy arrives through. */
 type T = TranslateNS<typeof NS>
@@ -84,26 +107,48 @@ const PANEL_MARGIN = 12
 const UNPLACED: CSSProperties = { visibility: 'hidden', left: 0, top: 0 }
 
 /**
+ * What this component knows about the project's node.
+ *
+ * Four states because the node is a fact of the HOST's and the title has to be
+ * honest about not having it yet:
+ *
+ * - `known` — the project's position in the flow, which is what the tag draws;
+ * - `reading` — ask in flight (or about to be): every row is inert, because a
+ *   click would move a project from a position nobody has read;
+ * - `failed` — the answer could not be read. Deliberately NOT the first node: a
+ *   project at 完成 would be shown as 需求明确, which is the exact lie that
+ *   persisting the node is meant to prevent;
+ * - `no-project` — nothing is selected, so there is no record to ask about and no
+ *   move to make. The host is not asked at all.
+ */
+type StageRead =
+  | { readonly state: 'known'; readonly index: number }
+  | { readonly state: 'reading' }
+  | { readonly state: 'failed'; readonly message: string }
+  | { readonly state: 'no-project' }
+
+/**
  * Render the current stage of one project, with the flow behind it.
  * @param props - the project scope, its directory, the rail flag, and the copy seat.
  * @returns the tag, its portaled panel, and the gate dialog a gated click opens.
  */
 export function StageTag({ scopeKey, scopePath, scopeLabel, rail, openInSidebar, t }: {
   /**
-   * The project this tag reports on — its workspace id. The stage is that
-   * project's own fact, so this is also the persistence key; while no project is
-   * selected the column passes one shared bucket instead (NO_PROJECT_SCOPE), so
-   * "no project" is a scope rather than a crash.
+   * The project this tag reports on — its workspace id. The tag holds no state
+   * under it (the node lives on the host, keyed by the project's path); it is the
+   * React identity of "which project is this", so a switch re-reads rather than
+   * carrying the previous project's node across. While no project is selected the
+   * column passes one shared bucket instead (NO_PROJECT_SCOPE).
    */
   scopeKey: string
   /**
-   * The project's DIRECTORY, which is what a gate check is asked about: the host
-   * resolves the project's Feishu folder from its record, keyed by path. Absent
-   * while no project is selected — and the gate dialog then states that it cannot
-   * check rather than letting the stage move.
+   * The project's DIRECTORY: the key of its record on the host, which is where the
+   * node lives AND what a gate check is asked about (the host resolves the
+   * project's Feishu folder from it). Absent while no project is selected, and the
+   * tag then reads nothing and can move nothing.
    */
   scopePath?: string | undefined
-  /** The project's name, shown in the panel so the flow is never ambiguous. */
+  /** The project's name, shown in the panel and sent with a first registration. */
   scopeLabel?: string | undefined
   /** Rail layout: the tag shrinks to the ring alone (see the stylesheet). */
   rail: boolean
@@ -111,7 +156,18 @@ export function StageTag({ scopeKey, scopePath, scopeLabel, rail, openInSidebar,
   openInSidebar?: ((url: string) => boolean) | undefined
   t: T
 }): ReactNode {
-  const [stage, setStage] = useState(() => readStage(scopeKey))
+  const [read, setRead] = useState<StageRead>(
+    // A tag with no project has nothing to ask about, so it starts in that state
+    // rather than in `reading`: the effect below would otherwise flash a read that
+    // never happens.
+    scopePath === undefined ? { state: 'no-project' } : { state: 'reading' },
+  )
+  /** How many times the read has been asked for: what a retry bumps. */
+  const [attempt, setAttempt] = useState(0)
+  /** A move the host refused (or a read that failed), in the operator's words. */
+  const [notice, setNotice] = useState<string | null>(null)
+  /** A write is in flight: no second move may be started from the same state. */
+  const [busy, setBusy] = useState(false)
   const [open, setOpen] = useState(false)
   /** The gate dialog's subject: the stage index a gated click is trying to enter. */
   const [gateTo, setGateTo] = useState<number | null>(null)
@@ -126,17 +182,62 @@ export function StageTag({ scopeKey, scopePath, scopeLabel, rail, openInSidebar,
    */
   const gateOpen = useRef(false)
 
-  // Follow the project. The stage belongs to the SELECTED project, so switching
-  // projects must re-read rather than carry the previous one's stage across — and
-  // a gate dialog belongs to the previous project's transition, so it is dropped
-  // for the same reason. (The panel is not closed here: the trigger is the same
-  // control either way, and a panel that vanished on a project switch would look
-  // like a crash.)
+  // Follow the project. The node belongs to the SELECTED project, so switching
+  // projects asks about the new one rather than carrying the previous one's node
+  // across — and a gate dialog belongs to the previous project's transition, so it
+  // is dropped for the same reason. (The panel is not closed here: the trigger is
+  // the same control either way, and a panel that vanished on a project switch
+  // would look like a crash.)
+  //
+  // `live` guards the ASYNC half: a slow read for the project the operator has
+  // already left must not land as the new project's node. That is a worse bug than
+  // a stale label — it would move the wrong project.
   useEffect(() => {
-    setStage(readStage(scopeKey))
     setGateTo(null)
+    setNotice(null)
     gateOpen.current = false
-  }, [scopeKey])
+    if (scopePath === undefined) {
+      setRead({ state: 'no-project' })
+      return
+    }
+    let live = true
+    setRead({ state: 'reading' })
+    void (async () => {
+      const answer = await readProjectRecord(scopePath)
+      if (!live) return
+      if (!answer.ok) {
+        setRead({ state: 'failed', message: answer.error.message })
+        return
+      }
+      const hosted = answer.value?.stage ?? null
+      if (hosted !== null) {
+        setRead({ state: 'known', index: stageIndexOf(hosted) })
+        return
+      }
+      // The host holds no node for this project, so this browser's own old note is
+      // the FIRST REGISTRATION — see `legacyStageIndexOf`. A browser that recorded
+      // nothing has nothing to register, and the flow's first node stands for a
+      // project nobody has placed.
+      const legacy = legacyStageIndexOf(scopeKey)
+      const node = legacy === null ? undefined : stageAt(legacy)
+      if (node === undefined || scopeLabel === undefined || scopeLabel === '') {
+        setRead({ state: 'known', index: legacy ?? DEFAULT_STAGE })
+        return
+      }
+      const registered = await writeProjectStage({ path: scopePath, name: scopeLabel, stage: node })
+      if (!live) return
+      // A registration the host refused (or could not be asked) falls back to what
+      // this browser had: the operator's next click is a first registration the
+      // host may still accept, and showing nothing at all would be worse than
+      // showing the position they last recorded.
+      const landed = registered.ok ? registered.value?.stage ?? null : null
+      setRead({
+        state: 'known',
+        index: landed === null ? legacy ?? DEFAULT_STAGE : stageIndexOf(landed),
+      })
+    })()
+    return () => { live = false }
+  }, [scopeKey, scopePath, scopeLabel, attempt])
 
   const triggerRef = useRef<HTMLButtonElement | null>(null)
   const panelRef = useRef<HTMLDivElement | null>(null)
@@ -227,32 +328,98 @@ export function StageTag({ scopeKey, scopePath, scopeLabel, rail, openInSidebar,
       || (active instanceof HTMLButtonElement && active.disabled)
     if (!lost) return
     panelRef.current?.querySelector<HTMLElement>('[aria-current="step"]')?.focus()
-  }, [stage, open])
-
-  const stageKey = STAGE_KEYS[stage] ?? STAGE_KEYS[DEFAULT_STAGE]
+  }, [read, open])
 
   /**
-   * Record the step, and clear the dialog's subject with it: a moved stage is the
-   * feedback for the click, exactly as it has always been.
-   * @param next - the stage to record.
+   * The project's node, or null while it is not known.
+   *
+   * EVERYTHING the tag draws reads this, which is what keeps "we have not read it
+   * yet" from being silently drawn as a node the project might not be at.
    */
-  const advance = (next: number): void => {
-    setStage(next)
-    writeStage(scopeKey, next)
+  const current = read.state === 'known' ? read.index : null
+
+  /**
+   * What the panel's rows are labelled from.
+   *
+   * The flow's first node stands in while nothing is known, because the PANEL is
+   * the flow and its rows have to be about something — the rows are inert in that
+   * state, and the panel says why in its own line (see `readOnlyReason`), which is
+   * what keeps the stand-in from reading as a claim about the project.
+   */
+  const display = current ?? DEFAULT_STAGE
+
+  /**
+   * Why nothing can be moved right now, in the operator's words — or null while the
+   * node IS known.
+   *
+   * One sentence per state, stated once: the panel's own line and every row's
+   * tooltip are both this, so the flow cannot explain itself two ways.
+   */
+  const readOnlyReason: string | null = read.state === 'known'
+    ? null
+    : read.state === 'reading'
+      ? t('stage.read.pending')
+      : read.state === 'failed'
+        ? t('stage.read.failed', { message: read.message })
+        : t('stage.read.noProject')
+
+  /**
+   * Move the project one node forward, through the host.
+   *
+   * The host is asked, and the answer is what the tag shows: a write that succeeds
+   * carries the record it produced, and a write the host REFUSES leaves the project
+   * where it was — so the tag asks where that is and says why, rather than keeping
+   * the node that was clicked.
+   * @param next - the node to enter.
+   */
+  const advance = async (next: number): Promise<void> => {
+    const node = stageAt(next)
+    if (scopePath === undefined || node === undefined || read.state !== 'known' || busy) return
     setGateTo(null)
     gateOpen.current = false
+    setBusy(true)
+    const answer = await writeProjectStage({
+      path: scopePath,
+      name: scopeLabel ?? '',
+      stage: node,
+    })
+    setBusy(false)
+    if (answer.ok) {
+      const hosted = answer.value?.stage ?? null
+      setRead({
+        state: 'known',
+        index: hosted === null ? next : stageIndexOf(hosted),
+      })
+      setNotice(null)
+      return
+    }
+    // Refused, or the host could not be reached. Either way the tag no longer knows
+    // where the project stands, and guessing is what this change exists to stop —
+    // so ask, and fall back to the last known node only if even that fails.
+    if (answer.error.code === 'not-next') {
+      const truth = await readProjectRecord(scopePath)
+      if (truth.ok) {
+        const hosted = truth.value?.stage ?? null
+        setRead({ state: 'known', index: hosted === null ? DEFAULT_STAGE : stageIndexOf(hosted) })
+      }
+    }
+    setNotice(t('stage.move.refused', { message: answer.error.message }))
   }
 
   /**
    * Handle a click on one node: the only place the stage ever moves.
-   * @param index - the clicked stage.
+   * @param index - the clicked node.
    */
   const choose = (index: number): void => {
-    // The current stage is where the project already is, so its click is a no-op
+    // Nothing is known, so there is no position to move FROM: the rows are inert
+    // in that state (see `readOnlyReason`), and this guard is what keeps a stale
+    // click from moving a project whose node was never read.
+    if (current === null) return
+    // The current node is where the project already is, so its click is a no-op
     // rather than a re-write — and it stays clickable so the panel can focus it.
-    if (index === stage) return
-    // Everything else is locked except the next stage: see `canEnterStage`.
-    if (!canEnterStage(stage, index)) return
+    if (index === current) return
+    // Everything else is locked except the next node: see `canEnterStage`.
+    if (!canEnterStage(current, index)) return
     // A gated transition is not a move but a DECISION, so it opens the dialog;
     // this component learns the outcome from that dialog's pass and nowhere else.
     if (gateForEntryStage(index) !== undefined) {
@@ -260,7 +427,7 @@ export function StageTag({ scopeKey, scopePath, scopeLabel, rail, openInSidebar,
       gateOpen.current = true
       return
     }
-    advance(index)
+    void advance(index)
   }
 
   return (
@@ -269,21 +436,33 @@ export function StageTag({ scopeKey, scopePath, scopeLabel, rail, openInSidebar,
         type="button"
         data-wui="stageTag"
         data-wui-rail-in="true"
-        data-step={stage}
+        // The node is only claimed when it is KNOWN: the attribute is what the
+        // stylesheet and the tests read, so leaving it off while nothing has been
+        // read is what keeps "unknown" from being rendered as a position.
+        data-step={current ?? undefined}
+        data-pending={current === null || undefined}
         data-open={open || undefined}
         aria-haspopup="dialog"
         aria-expanded={open}
-        aria-label={t('stage.tag.label', { stage: t(stageKey), n: stage + 1, total: STAGE_COUNT })}
+        aria-label={current === null
+          ? t('stage.flow.title')
+          : t('stage.tag.label', { stage: t(stageKeyAt(current)), n: current + 1, total: STAGE_COUNT })}
         title={t('stage.tag.hint')}
         ref={triggerRef}
         onClick={() => { setOpen(value => !value) }}
       >
         {/* The ring states the position in the flow (and the rail keeps it as
-            the tag's whole content); the words state the stage. */}
+            the tag's whole content); the words state the node. While none is
+            known the tag names the FLOW instead and drops the counter: it is
+            still the same control, and it no longer claims a position. */}
         <span data-wui="stageRing" aria-hidden="true" />
-        {!rail && <span data-wui="stageTagLabel">{t(stageKey)}</span>}
         {!rail && (
-          <span data-wui="stageTagCount" aria-hidden="true">{`${stage + 1}/${STAGE_COUNT}`}</span>
+          <span data-wui="stageTagLabel">
+            {current === null ? t('stage.flow.title') : t(stageKeyAt(current))}
+          </span>
+        )}
+        {!rail && current !== null && (
+          <span data-wui="stageTagCount" aria-hidden="true">{`${current + 1}/${STAGE_COUNT}`}</span>
         )}
         {!rail && (
           <span data-wui="stageTagChevron" aria-hidden="true"><IconChevronDownOutline14 size={14} /></span>
@@ -300,17 +479,46 @@ export function StageTag({ scopeKey, scopePath, scopeLabel, rail, openInSidebar,
         >
           <div data-wui="stagePanelHead">
             <span data-wui="stagePanelTitle">{t('stage.flow.title')}</span>
-            <span data-wui="stagePanelCount">{`${stage + 1} / ${STAGE_COUNT}`}</span>
+            <span data-wui="stagePanelCount">
+              {current === null ? '' : `${current + 1} / ${STAGE_COUNT}`}
+            </span>
           </div>
           {/* The project the flow belongs to. Without it, a panel opened right
               after a project switch could be read as the previous project's. */}
           {scopeLabel !== undefined && (
             <div data-wui="stagePanelScope" title={scopeLabel}>{scopeLabel}</div>
           )}
+          {/* Why nothing can be moved, while nothing can be: the node is unread or
+              unreadable. It is stated HERE rather than only in a tooltip, because
+              the alternative — an inert flow with no reason — reads as a bug. */}
+          {readOnlyReason !== null && (
+            <div data-wui="stagePanelState" role="status">
+              <span>{readOnlyReason}</span>
+              {read.state === 'failed' && (
+                <button
+                  type="button"
+                  data-wui="stageRetry"
+                  onClick={() => { setAttempt(count => count + 1) }}
+                >
+                  {t('stage.read.retry')}
+                </button>
+              )}
+            </div>
+          )}
+          {/* What the host said about the last move — a refusal, in its own words.
+              It sits above the list because it explains why the list did not
+              change, and it is cleared by the next read or the next move. */}
+          {notice !== null && (
+            <div data-wui="stageNotice" role="status">{notice}</div>
+          )}
           <ul data-wui="stageList">
             {STAGE_KEYS.map((key, index) => {
-              const state: StageState = stageStateAt(index, stage)
-              const locked = isStageLocked(index, stage)
+              // While nothing is known every row is inert and reads as ahead of the
+              // project: there is no position to be behind, on, or next after. The
+              // REASON is the panel's own line — a row's tooltip is too quiet to
+              // carry it alone.
+              const state: StageState = current === null ? 'pending' : stageStateAt(index, current)
+              const locked = current === null || busy || isStageLocked(index, current)
               return (
                 <li
                   key={key}
@@ -328,16 +536,18 @@ export function StageTag({ scopeKey, scopePath, scopeLabel, rail, openInSidebar,
                     // stylesheet and the tests read.
                     data-locked={locked || undefined}
                     disabled={locked || undefined}
-                    title={index === stage
-                      ? t('stage.node.current')
-                      : locked ? t('stage.node.locked') : t('stage.node.hint', { stage: t(key) })}
+                    title={readOnlyReason !== null
+                      ? readOnlyReason
+                      : index === current
+                        ? t('stage.node.current')
+                        : locked ? t('stage.node.locked') : t('stage.node.hint', { stage: t(key) })}
                     aria-current={state === 'current' ? 'step' : undefined}
                     onClick={() => { choose(index) }}
                   >
                     <span data-wui="stageNodeCell">
                       <span data-wui="stageNode" aria-hidden="true">
-                        {/* The check belongs to THIS stage and everything behind
-                            it; a stage ahead of it stays an empty ring. The
+                        {/* The check belongs to THIS node and everything behind
+                            it; a node ahead of it stays an empty ring. The
                             running one is drawn a touch larger, which is the
                             only difference motion does not already say. */}
                         {state !== 'pending' && <IconCheckOutline16 size={state === 'current' ? 13 : 12} />}
@@ -346,7 +556,7 @@ export function StageTag({ scopeKey, scopePath, scopeLabel, rail, openInSidebar,
                     <span data-wui="stageLabel">{t(key)}</span>
                     {/* One index still decides this row: `stageStatusKey` is the
                         single place the terminal node's word differs. */}
-                    <span data-wui="stageStatus">{t(stageStatusKey(index, stage))}</span>
+                    <span data-wui="stageStatus">{t(stageStatusKey(index, display))}</span>
                   </button>
                 </li>
               )
@@ -361,7 +571,7 @@ export function StageTag({ scopeKey, scopePath, scopeLabel, rail, openInSidebar,
         open={gateTo !== null}
         path={scopePath ?? ''}
         to={gateTo ?? DEFAULT_STAGE}
-        onPassed={() => { if (gateTo !== null) advance(gateTo) }}
+        onPassed={() => { if (gateTo !== null) void advance(gateTo) }}
         openInSidebar={openInSidebar}
         onClose={() => {
           const closed = gateTo

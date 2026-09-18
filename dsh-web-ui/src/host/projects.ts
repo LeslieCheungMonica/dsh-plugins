@@ -37,6 +37,8 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { isFlowStageId, nextStageId } from '../shared/stageflow.ts'
+import type { FlowStageId } from '../shared/stageflow.ts'
 
 /** What the operator said this project is. Mirrors the form's three answers. */
 export type ProductBackground = 'new' | 'existing' | 'unsure'
@@ -78,9 +80,39 @@ export interface ProjectRecord {
    * standing permission.
    */
   readonly gateConfirmations: Record<string, GateConfirmationRecord>
+  /**
+   * Where the project stands in the FDE delivery flow — the node itself, named by
+   * its stable id (see `src/shared/stageflow.ts`) — or `null` while nobody has
+   * recorded a position.
+   *
+   * `null` is NOT the first node. It is the honest encoding of "this project has
+   * never been placed", and it is load-bearing twice over: it is what lets the
+   * first registration name any node (a project picked up mid-delivery, or one
+   * whose node only ever existed in a browser — see `POST /project/stage`), and
+   * it is what keeps every later move to one step (see
+   * {@link ProjectStore.setStage}).
+   *
+   * The id rather than a position, so inserting a node into the flow cannot
+   * silently change what a stored value means.
+   */
+  readonly stage: FlowStageId | null
   /** Epoch ms of the last write, for a tie-break and for support. */
   readonly updatedAt: number
 }
+
+/** What came of recording a project's node. */
+export type StageWriteResult =
+  | { readonly ok: true; readonly record: ProjectRecord }
+  /**
+   * The move was refused and nothing was written. It answers with the record as
+   * it stands, so the page that asked can put itself right instead of showing a
+   * node the host does not agree with.
+   *
+   * `from` is that record's own node, carried separately only because the type
+   * cannot say "not null in this arm" — a refusal is only ever produced when a
+   * node IS recorded, which is also why it is typed as a node and not `| null`.
+   */
+  | { readonly ok: false; readonly code: 'not-next'; readonly from: FlowStageId; readonly record: ProjectRecord }
 
 /** One recorded manual answer. */
 export interface GateConfirmationRecord {
@@ -181,11 +213,17 @@ function toRecord(raw: unknown, path: string): ProjectRecord | undefined {
   const record = raw as Record<string, unknown>
   const name = record['name']
   if (typeof name !== 'string') return undefined
+  const rawStage = record['stage']
   return {
     name,
     path,
     background: asBackground(record['background']),
     productCardId: typeof record['productCardId'] === 'string' ? record['productCardId'] : '',
+    // Absent in every record written before the node was persisted here, and
+    // absent means `null`: a node this build does not know is treated the same
+    // way, because "a node nobody can place" and "no node recorded" call for the
+    // same answer — the next registration is the first one.
+    stage: isFlowStageId(rawStage) ? rawStage : null,
     // Absent in every record written before projects had a Feishu folder, which
     // is `''` and not a repair: "no folder recorded yet" is the true state of
     // such a record, and `GET /folder` is what resolves it.
@@ -223,7 +261,7 @@ export interface ProjectStore {
    * @param record - the form's fields; `updatedAt` is stamped here.
    * @returns the stored record.
    */
-  put: (record: Omit<ProjectRecord, 'updatedAt' | 'larkFolderToken' | 'larkFolderUrl' | 'gateConfirmations'>) => Promise<ProjectRecord>
+  put: (record: Omit<ProjectRecord, 'updatedAt' | 'larkFolderToken' | 'larkFolderUrl' | 'gateConfirmations' | 'stage'>) => Promise<ProjectRecord>
   /**
    * Record the project's Feishu folder, or adopt one for it.
    *
@@ -264,6 +302,35 @@ export interface ProjectStore {
     by: string
     at: number
   }) => Promise<ProjectRecord>
+  /**
+   * Record where a project stands in the FDE delivery flow.
+   *
+   * The flow's RULE lives HERE rather than in the route, because judging a move
+   * means reading the record the move is judged against, and a route that read,
+   * decided and then wrote would open a window between its own two steps in which
+   * two operators advancing at once could both be told yes.
+   *
+   * Two moves are accepted and one is exempt:
+   *
+   * - **nothing recorded → any node.** The first registration. A project can be
+   *   picked up mid-delivery, and this is also how a node that only ever existed
+   *   in a browser's `localStorage` arrives. It happens once: from then on the
+   *   project has a position, and the exemption is spent;
+   * - **the node already recorded → a success that writes nothing.** A double
+   *   click is not an error, and re-stamping the document for a move nobody made
+   *   would make the record claim a change that did not happen;
+   * - **the next node → recorded.**
+   *
+   * Everything else — a jump and a step BACK alike — is refused with `not-next`
+   * and the node the project actually stands at, and a refusal does not touch the
+   * document at all. A backward move is refused for the same reason a jump is:
+   * the flow records work that has been DONE, so walking back would un-record it.
+   * Correcting a mistaken advance means editing the document, which is a plain
+   * JSON file an operator can open (that is what the file is for).
+   * @param input - the project, the name to use when it has no record yet, and the node.
+   * @returns the stored record, or the refusal and where the project stands.
+   */
+  setStage: (input: { path: string; name: string; stage: FlowStageId }) => Promise<StageWriteResult>
   /** Read every record. */
   all: () => Promise<readonly ProjectRecord[]>
 }
@@ -338,6 +405,11 @@ export function createProjectStore(): ProjectStore {
         // And so does a manual answer: the edit form asks about the product, not
         // about the customer conversation, so a rename must not withdraw one.
         gateConfirmations: previous?.gateConfirmations ?? {},
+        // And so does the flow's node: the form records what a project IS, not
+        // how far its delivery has got, so renaming one must not send it back to
+        // the start (nor to "never placed", which its next move would read as a
+        // first registration and the licence to jump).
+        stage: previous?.stage ?? null,
         updatedAt: Date.now(),
       }
       records[input.path] = record
@@ -355,6 +427,7 @@ export function createProjectStore(): ProjectStore {
         larkFolderToken: input.folderToken,
         larkFolderUrl: input.url,
         gateConfirmations: previous?.gateConfirmations ?? {},
+        stage: previous?.stage ?? null,
         updatedAt: Date.now(),
       }
       records[input.path] = record
@@ -378,11 +451,40 @@ export function createProjectStore(): ProjectStore {
         larkFolderToken: previous?.larkFolderToken ?? '',
         larkFolderUrl: previous?.larkFolderUrl ?? '',
         gateConfirmations: answers,
+        stage: previous?.stage ?? null,
         updatedAt: Date.now(),
       }
       records[input.path] = record
       await save(records)
       return record
+    },
+    setStage: async (input) => {
+      const records = await load()
+      const previous = records[input.path]
+      // The exemption, and the rule, in one place: see `ProjectStore.setStage`.
+      if (previous !== undefined && previous.stage !== null) {
+        // Already there: the move nobody made is a success, and not a write.
+        if (input.stage === previous.stage) return { ok: true, record: previous }
+        // `nextStageId` is undefined at the terminal node, so a project sitting
+        // on 完成 can be moved nowhere — which is what terminal means.
+        if (input.stage !== nextStageId(previous.stage)) {
+          return { ok: false, code: 'not-next', from: previous.stage, record: previous }
+        }
+      }
+      const record: ProjectRecord = {
+        name: previous?.name ?? input.name,
+        path: input.path,
+        background: previous?.background ?? 'unsure',
+        productCardId: previous?.productCardId ?? '',
+        larkFolderToken: previous?.larkFolderToken ?? '',
+        larkFolderUrl: previous?.larkFolderUrl ?? '',
+        gateConfirmations: previous?.gateConfirmations ?? {},
+        stage: input.stage,
+        updatedAt: Date.now(),
+      }
+      records[input.path] = record
+      await save(records)
+      return { ok: true, record }
     },
   }
 }

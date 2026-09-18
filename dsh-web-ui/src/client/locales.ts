@@ -13,10 +13,11 @@ export const zh = {
   'toggle.open': '展开侧边栏',
   'session.new': '新建会话',
   'session.new.label': '新建会话',
-  // The FDE delivery flow (see stage.ts). The six stages are named in DELIVERY
+  // The FDE delivery flow (see stage.ts). The seven stages are named in DELIVERY
   // order and must stay in that order: the tag derives "done / running / not
-  // started" from a stage's position, so reordering these names reorders the
-  // flow itself.
+  // started" from a stage's position, so reordering these names reorders the flow
+  // itself. That order is the SHARED one (`src/shared/stageflow.ts`), because the
+  // host validates a move against it — this dictionary is only the words.
   'stage.requirement': '需求明确',
   'stage.design': '技术选型与详设',
   'stage.development': '代码开发与自测',
@@ -39,6 +40,19 @@ export const zh = {
   // positional (see stage.ts), so this sentence names the RULE rather than the
   // row: nothing is wrong with the stage itself.
   'stage.node.locked': '不能跳过：FDE 流程只能按顺序推进',
+  // Reading and moving the node, now that the HOST holds it (see stage.ts and
+  // `POST /project/stage`). The node is a fact about one project, so every one of
+  // these sentences is about a read or a move that could not be made — and none of
+  // them is allowed to fall back on a node nobody recorded, which is why the
+  // unreadable ones say so instead.
+  'stage.read.pending': '正在读取该项目在 FDE 流程中的节点…',
+  'stage.read.failed': '读不到该项目在 FDE 流程中的节点：{message}',
+  'stage.read.noProject': '还没有选中项目：流程节点属于某个项目，先选一个',
+  'stage.read.retry': '重试',
+  // A move the host REFUSED. It quotes the host's own reason, because the host is
+  // what judged it: the page shows where the project really is and why it did not
+  // move, rather than the node that was clicked.
+  'stage.move.refused': '节点没有改变：{message}',
   // The FDE stage gate (see stagegateapi.ts and src/host/stage-gate.ts). The three
   // item names are the outputs 需求明确 owes 技术选型与详设; the host decides what
   // satisfies one, and these are what it is called here.
@@ -464,6 +478,19 @@ export const zh = {
   'lark.untitled': '（无标题）',
   'lark.hint.login': '在终端执行 `lark-cli auth login` 完成飞书登录，然后点「重试」。',
   'lark.hint.network': '宿主到飞书的网络不通（TLS/代理/VPN）：恢复网络后点「重试」。',
+  'lark.login.action': '登录飞书',
+  'lark.login.title': '登录飞书',
+  'lark.login.close': '关闭登录窗口',
+  'lark.login.cancel': '取消',
+  'lark.login.starting': '正在生成二维码…',
+  'lark.login.scan': '用飞书扫下面的二维码，并在手机上确认授权。确认后这个窗口会自己关掉，飞书文档随即刷新。',
+  'lark.login.qrAlt': '飞书授权二维码',
+  'lark.login.open': '在浏览器里打开授权页',
+  'lark.login.scopes': '本次申请的权限：{scopes}',
+  'lark.login.expiresIn': '二维码还有 {n} 秒失效',
+  'lark.login.expired': '二维码已过期。',
+  'lark.login.retryHint': '点「重新生成二维码」再来一次。',
+  'lark.login.regenerate': '重新生成二维码',
   'lark.noProject': '选中一个项目后，这里显示它在飞书中的目录。',
   'lark.folder.missing': '这个项目在飞书归档目录里还没有自己的目录。',
   'lark.folder.create': '创建飞书目录',
@@ -512,6 +539,12 @@ export const en = {
   'stage.node.hint': 'Set “{stage}” as the current stage',
   'stage.node.current': 'Current stage',
   'stage.node.locked': 'No skipping: the FDE flow is walked in order',
+  // See the Chinese dictionary: reading and moving a node the HOST holds.
+  'stage.read.pending': 'Reading this project’s FDE flow node…',
+  'stage.read.failed': 'Could not read this project’s FDE flow node: {message}',
+  'stage.read.noProject': 'No project is selected yet: a flow node belongs to one, so pick one first',
+  'stage.read.retry': 'Retry',
+  'stage.move.refused': 'The node did not change: {message}',
   'stageGate.title': 'Stage gate',
   'stageGate.target': 'Enter “{stage}”',
   'stageGate.checking': 'Checking the outputs “{stage}” requires…',
@@ -902,6 +935,19 @@ export const en = {
   'lark.untitled': '(untitled)',
   'lark.hint.login': 'Run `lark-cli auth login` in a terminal, then press Retry.',
   'lark.hint.network': 'The host cannot reach Feishu (TLS/proxy/VPN). Restore the network, then press Retry.',
+  'lark.login.action': 'Sign in to Feishu',
+  'lark.login.title': 'Sign in to Feishu',
+  'lark.login.close': 'Close the sign-in dialog',
+  'lark.login.cancel': 'Cancel',
+  'lark.login.starting': 'Generating the QR code…',
+  'lark.login.scan': 'Scan the QR code with Feishu and confirm on your phone. This dialog closes itself once you do, and the docs refresh with it.',
+  'lark.login.qrAlt': 'Feishu authorization QR code',
+  'lark.login.open': 'Open the authorization page in a browser',
+  'lark.login.scopes': 'Scopes requested: {scopes}',
+  'lark.login.expiresIn': 'The QR code expires in {n}s',
+  'lark.login.expired': 'That QR code expired.',
+  'lark.login.retryHint': 'Press “Generate a new QR code” to try again.',
+  'lark.login.regenerate': 'Generate a new QR code',
   'lark.noProject': 'Pick a project above; its folder in Feishu shows here.',
   'lark.folder.missing': 'This project has no folder of its own in the Feishu archive yet.',
   'lark.folder.create': 'Create the Feishu folder',

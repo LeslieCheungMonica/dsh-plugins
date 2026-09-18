@@ -48,6 +48,7 @@ import type {
   FolderResolution, LarkEntry, LarkError, LarkResult, LarkState,
 } from './larkapi.ts'
 import { feishuFailureHint } from './projectFlow.ts'
+import { LarkLoginDialog } from './LarkLoginDialog.tsx'
 
 /** Props: the project this panel is about, and the column's copy seat. */
 export interface LarkDocsPanelProps {
@@ -169,6 +170,14 @@ export function LarkDocsPanel({ t, project, openInSidebar }: LarkDocsPanelProps)
   const [attachOpen, setAttachOpen] = useState(false)
   const [attachText, setAttachText] = useState('')
   const [avatarFailed, setAvatarFailed] = useState(false)
+  /**
+   * The scopes the login dialog is asking for, or null while it is closed.
+   *
+   * The SCOPES are the dialog's argument rather than a boolean, because they are
+   * what the failure named: opening the dialog for a missing scope asks for that
+   * scope, and opening it for a missing login asks for the host's own set.
+   */
+  const [loginScopes, setLoginScopes] = useState<readonly string[] | null>(null)
 
   // One generation for the whole panel: a refresh or a project switch bumps it,
   // and every in-flight read compares against it before touching state.
@@ -363,6 +372,33 @@ export function LarkDocsPanel({ t, project, openInSidebar }: LarkDocsPanelProps)
   const actionHint = actionError === null ? null : feishuFailureHint(actionError, t)
 
   /**
+   * The one failure a Retry cannot fix.
+   *
+   * A missing scope and a missing login are the same problem from here: the
+   * operator has to authorize, and pressing Retry re-asks a question that was
+   * already refused. Everything else — a network, a permission they must be
+   * granted, a missing binary — is NOT this, and offering a login for it would
+   * send them round a loop.
+   * @param failure - the failure a surface is rendering.
+   * @returns the login button, or null when a login is not the fix.
+   */
+  const loginButton = (failure: LarkError | null): ReactNode => {
+    if (failure === null) return null
+    if (failure.code !== 'scope-missing' && failure.code !== 'not-logged-in') return null
+    const scopes = failure.missingScopes ?? []
+    return (
+      <button
+        type="button"
+        data-wui="larkNoteAction"
+        data-primary="true"
+        onClick={() => { setLoginScopes(scopes) }}
+      >
+        {t('lark.login.action')}
+      </button>
+    )
+  }
+
+  /**
    * Render one level and, recursively, the levels opened below it.
    *
    * `chain` is this level's ancestry — the folder tokens that led here, this one
@@ -412,6 +448,7 @@ export function LarkDocsPanel({ t, project, openInSidebar }: LarkDocsPanelProps)
           <div data-wui="larkNote" data-depth={depth} data-tone="error" style={indent(depth)}>
             <span>{level.error.message}</span>
             {hint !== null && <span data-wui="larkErrorHint">{hint}</span>}
+            {loginButton(level.error)}
             <button
               type="button"
               data-wui="larkNoteAction"
@@ -559,6 +596,7 @@ export function LarkDocsPanel({ t, project, openInSidebar }: LarkDocsPanelProps)
           <div data-wui="larkError" role="status">
             <span data-wui="larkErrorText">{error.message}</span>
             {errorHint !== null && <span data-wui="larkErrorHint">{errorHint}</span>}
+            {loginButton(error)}
             <button type="button" data-wui="larkNoteAction" onClick={() => { void connect(true) }}>
               {t('lark.retry')}
             </button>
@@ -609,6 +647,7 @@ export function LarkDocsPanel({ t, project, openInSidebar }: LarkDocsPanelProps)
           <div data-wui="larkNote" data-tone="error">
             <span>{actionError.message}</span>
             {actionHint !== null && <span data-wui="larkErrorHint">{actionHint}</span>}
+            {loginButton(actionError)}
           </div>
         )}
 
@@ -618,6 +657,23 @@ export function LarkDocsPanel({ t, project, openInSidebar }: LarkDocsPanelProps)
           <div data-wui="larkNote">{t('lark.empty')}</div>
         )}
       </div>
+
+      {loginScopes !== null && (
+        <LarkLoginDialog
+          open
+          scopes={loginScopes}
+          t={t}
+          onDone={() => {
+            // The login landed, so the read that failed is worth re-reading:
+            // `connect(true)` drops the host's caches and walks the panel again,
+            // which is what makes the authorization visible as the folder it was
+            // blocking.
+            setLoginScopes(null)
+            void connect(true)
+          }}
+          onClose={() => { setLoginScopes(null) }}
+        />
+      )}
     </div>
   )
 }

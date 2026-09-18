@@ -1,6 +1,7 @@
 /**
- * The frame's action row: ONE horizontal strip of controls at the conversation
- * header's right, above its hairline.
+ * The frame's action row: ONE horizontal strip of controls in the viewport's
+ * top-right corner — where `better-sidebar`'s panel toggles live, and, with no
+ * such plugin on the page, above the conversation header's hairline.
  *
  * It is ONE registration into `shell.overlay` (a root-scope, additive,
  * click-through list seat), and that single-ness is the design:
@@ -23,16 +24,47 @@
  *   come first, so the strip reads left to right as "the frame's control, then
  *   the panels".
  *
+ *   `better-sidebar` — the plugin that occupies this corner in the current
+ *   deployment — does NOT take that seat: it positions its own toggle cluster
+ *   itself, inside a host it appends to `document.body`. That is exactly the
+ *   "two fixed bars" case above, and it is why the join to its cluster is
+ *   geometry in `styles.ts` rather than layout here.
+ *
  * ## Where the row sits
  *
- * Immediately above the conversation header's hairline — the 1px line under the
- * header's title and tab rows, measured at y=74 at the frame's own header height.
- * The row's own bottom lands at 66px, which keeps all of it, and not just most of
- * it, on the reader's side of that line. Both offsets are custom properties:
- * `--dsh-web-ui-bar-top` / `--dsh-web-ui-bar-right` move the row, and
- * `--dsh-web-ui-bar-shift` is space RESERVED to its right — `my-sider` writes it
- * while its docked panel is open, so a panel that covers the corner pushes the
- * whole row clear instead of burying Git under it.
+ * In the viewport's top-right corner, JOINED to `better-sidebar`'s toggle
+ * cluster while that plugin is on the page: the same band, immediately left of
+ * its round toggles, so the corner reads as one row — [Git] [bottom panel]
+ * [sidebar] — instead of two stacks that also overlapped each other. That
+ * cluster is `position: absolute` in its host at top 3px / right 10px, 28px
+ * buttons with a 4px gap, two of them on viewports ≥ 768px and one below, so
+ * the row's defaults mirror it: a 26px pill on the same centre line sits at top
+ * 4px, and the right inset is that 10px corner + the cluster's 60px (28px
+ * narrow) + an 8px gap. `styles.ts` states the join with
+ * `:has([data-dsh-toggle-cluster])`.
+ *
+ * A deployment without that plugin keeps the row exactly where it always was: at
+ * top 40px, immediately above the conversation header's hairline — the 1px line
+ * ui-conversation paints under the title and tab rows, measured at y=74 at the
+ * frame's own header height, which the row's 66px bottom edge stays clear of.
+ *
+ * The corner is also why the shipped session header reserves more space to its
+ * right while `better-sidebar`'s panel is closed: `styles.ts` extends the
+ * reservation that plugin already writes for its cluster by the row's own width
+ * (see the rule at the end of that layer).
+ *
+ * The offsets are custom properties: `--dsh-web-ui-bar-top` /
+ * `--dsh-web-ui-bar-right` move the row, `--dsh-web-ui-bar-width` reports its
+ * width to the header reservation, and `--dsh-web-ui-bar-shift` is space
+ * RESERVED to its right — `my-sider` writes it while its docked panel is open,
+ * so a panel that covers the corner pushes the whole row clear instead of
+ * burying Git under it.
+ *
+ * One state is unchanged from before the join: while `better-sidebar`'s right
+ * panel is OPEN the panel covers the row (the panel's host is z-index 25, this
+ * row is 1), even though it leaves its own cluster visible above it. Moving the
+ * row into the corner did not change that, and making Git stay on top of an open
+ * panel would mean fighting that plugin over its own chrome.
  *
  * ## What is in the row, and what is not
  *

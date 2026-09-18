@@ -88,6 +88,19 @@ export const useDismissOnOutsidePointer = (root, open, setOpen) => {
 export const Button = asTag('button', 'Button')
 
 /**
+ * Anchored placement, as a fixed position at the origin.
+ *
+ * The real primitive measures the anchor and the panel and keeps the panel inside
+ * the viewport; jsdom lays nothing out, so it would measure zeros and return the
+ * same thing anyway. What matters to the stage tag is that a position is
+ * RETURNED: its panel is portaled to the page body and only becomes focusable
+ * once it is placed (`position === null` means "laid out but hidden", see
+ * StageTag.tsx), so a stub that always answered `null` would freeze the panel in
+ * the state the tag has before it can be driven.
+ */
+export const useAnchoredPosition = () => ({ position: 'fixed', left: 0, top: 0 })
+
+/**
  * A real `<input>` carrying its value and change handler.
  *
  * `icon` is DROPPED rather than forwarded: the real primitive renders a glyph

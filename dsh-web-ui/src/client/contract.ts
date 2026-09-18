@@ -36,6 +36,9 @@ import type {
 } from '@deepseek-ai/dsh-client-runtime/client'
 import type { WebUiKey } from './locales.ts'
 import type { SelectionStore } from './project.ts'
+// Type-only: the shapes of the two peer sidebars this plugin consumes. Erased at
+// build — the services themselves arrive through `ctx.inject` in the browser half.
+import type { BetterSidebarService, WebSidebarService } from './sidebarLink.ts'
 
 /** Dictionary namespace owned by this plugin. */
 export const NS = 'webui'
@@ -78,11 +81,13 @@ export interface ShellInjected {
   /** Delete a project; its sessions fall back to the ungrouped bucket. */
   deleteWorkspace: (workspaceId: WorkspaceId) => Promise<void>
   /**
-   * Show a Feishu link inside the GUI, in `my-sider`'s docked web sidebar.
+   * Show a Feishu link inside the GUI, in whichever sidebar can hold a page
+   * (`my-sider`'s docked panel, `better-sidebar`'s browser tab).
    *
    * @param url - the link the host built.
    * @returns whether a sidebar took it; false means the caller should open a tab
-   * instead (no `my-sider` in this deployment, or its launcher is not mounted).
+   * instead (no such plugin in this deployment, its browser tab is switched off
+   * in its settings, or it has no active session to land the tab in).
    */
   openInSidebar: (url: string) => boolean
   /**
@@ -140,26 +145,32 @@ export interface ShellInjected {
 }
 
 /**
- * The capability this plugin CONSUMES from another plugin: `my-sider`'s docked
- * web sidebar, which can show a page inside the GUI.
+ * The capability this plugin CONSUMES from its PEERS: the sidebars that can show
+ * a page inside the GUI — `my-sider`'s docked web sidebar and `better-sidebar`'s
+ * browser tab.
  *
- * Declared here as well as in the plugin that provides it, for the same reason
+ * Declared here as well as in the plugins that provide them, for the same reason
  * the account seats are declared twice: a client bundle may not import a peer's
  * module (the purity gate in tsdown.config.ts), so a cordis service NAME is the
- * whole contract between them. It is reached OPTIONALLY — a deployment without
- * `my-sider` has no `ctx.webSidebar`, and every caller falls back to a plain tab
- * — so this is a capability, never a dependency of the column.
+ * whole contract between them. Both are reached OPTIONALLY — a deployment with
+ * neither has no such service, and every caller falls back to a plain tab — so
+ * these are capabilities, never dependencies of the column.
  *
- * `open` answers whether a mounted sidebar took the request. That boolean is the
- * point: without it a missing sidebar would turn a document click into nothing at
- * all, which reads as a broken link.
+ * The shapes live in `sidebarLink.ts`, next to the adapters that turn each peer
+ * into the ONE answer this plugin's callers ask for (`openInSidebar`), because
+ * only that module needs to know a peer's shape; declaring them once keeps the
+ * augmentation and the adapter from drifting apart.
+ *
+ * That answer is a boolean, and the boolean is the point: without it a missing
+ * sidebar would turn a document click into nothing at all, which reads as a
+ * broken link. `better-sidebar`'s service answers nothing about its own open, so
+ * its adapter asks the two questions the peer would refuse on (see
+ * `sidebarLink.ts`) and reports the refusal rather than assuming success.
  */
 declare module '@deepseek-ai/cordis' {
   interface Context {
-    webSidebar: {
-      /** Show a URL in the docked sidebar; false when no sidebar is mounted. */
-      open: (url: string) => boolean
-    }
+    webSidebar: WebSidebarService
+    betterSidebar: BetterSidebarService
     /**
      * The capability this plugin PROVIDES the other way: show a file's content
      * inside the GUI.
@@ -247,7 +258,9 @@ export interface SidebarAccountMenuOwnerProps {
 
 /**
  * The seat this plugin's ACTION ROW declares: one horizontal strip of controls
- * at the conversation header's right, above its hairline.
+ * in the viewport's top-right corner — the corner the panel toggles occupy, and,
+ * with no such plugin on the page, the band above the conversation header's
+ * hairline.
  *
  * It is the same move as `sidebar.account`, applied to the frame's top-right
  * corner. Two peer plugins each want a control there — this plugin's Git, and
@@ -261,6 +274,11 @@ export interface SidebarAccountMenuOwnerProps {
  * strip lays them out. A deployment without `my-sider` gets the row with Git
  * alone, and a deployment without `dsh-web-ui` gets `my-sider`'s own floating bar
  * (see that plugin's index.tsx for the bounded fallback).
+ *
+ * `better-sidebar` — the plugin that holds this corner in the current deployment
+ * — does NOT take this seat: it positions its own cluster, so the join to it is
+ * mirrored geometry in `styles.ts` instead of layout here (see the row's own
+ * comment in `ActionBar.tsx`).
  *
  * Declared by the ActionBar registration, not by the sidebar one: a child key
  * belongs to the entry that renders it.
