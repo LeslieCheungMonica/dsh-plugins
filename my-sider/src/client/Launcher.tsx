@@ -25,9 +25,15 @@
  * is open: in-row through the strip's `--dsh-web-ui-bar-shift`, alone through the
  * bar's own inline offset.
  *
+ * The command panel's geometry is the same idea turned ninety degrees, and it is
+ * why this file owns BOTH panels' numbers: the panel does not float over the
+ * conversation, it SPLITS the page — its height leaves the mount node as padding
+ * (see {@link SHELL_INSET_PROPERTY}), which also has to be the height the sidebar
+ * stops above, or the two panels would disagree about where the frame ends.
+ *
  * @module my-sider/client/Launcher
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { IconCodeOutline16, IconGlobeOutline14, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { SessionId, SessionListState, WorkspaceListState, WorkspaceView } from '@deepseek-ai/dsh-client-runtime/client'
@@ -60,6 +66,27 @@ const BAR_RIGHT = 24
  * offsets a deployment already tunes.
  */
 const BAR_SHIFT_PROPERTY = '--dsh-web-ui-bar-shift'
+
+/**
+ * The custom property the open command panel publishes as the height it takes
+ * OUT of the page.
+ *
+ * This is how the panel SPLITS the screen instead of covering its bottom: the
+ * panel is portalled onto `body`, outside the frame's grid, so it cannot be a
+ * sibling track — it can only tell the page how much room it needs, and this
+ * plugin's stylesheet spends the value as `padding-bottom` on the mount node.
+ * The property lives on `<html>` because that is the element the mount node's
+ * percentage height descends from, and it is REMOVED (not zeroed) when the panel
+ * closes, so the rule is inert while nothing is open.
+ */
+const SHELL_INSET_PROPERTY = '--ms-shell-h'
+
+/**
+ * How much viewport the command panel must leave to the app it docks into, in
+ * px. A panel dragged over the whole conversation would hide the thing it is
+ * there to serve — the same reason {@link MAX_WIDTH_SLACK} bounds the sidebar.
+ */
+const SHELL_FRAME_MIN = 240
 
 /**
  * Read one persisted flag.
@@ -140,6 +167,15 @@ export function Launcher({ useSessions, useWorkspaces, inRow, requests, t }: Lau
   const [shellOpen, setShellOpen] = useState(() => readFlag(OPEN_SHELL_KEY))
   const [webWidth, setWebWidth] = useState(readWebWidth)
   const [shellHeight, setShellHeight] = useState(() => Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, readHeight())))
+  const [viewportHeight, setViewportHeight] = useState(() => window.innerHeight)
+
+  // The height the open panel ACTUALLY takes: its own setting, clamped so the
+  // frame keeps {@link SHELL_FRAME_MIN} of the viewport, and never below the
+  // panel's own minimum — a viewport too short to honour both must still leave a
+  // usable panel rather than a zero-height one. One value, two consumers (the
+  // panel's box and the reserve the stylesheet spends), because two would
+  // disagree about where the page ends.
+  const shellInset = Math.max(MIN_HEIGHT, Math.min(shellHeight, viewportHeight - SHELL_FRAME_MIN))
 
   const sessionId = useSessions(state => (state as SessionListState).current) as SessionId | undefined
   const workspaces = useWorkspaces(state => (state as WorkspaceListState).items) as readonly WorkspaceView[]
@@ -223,6 +259,25 @@ export function Launcher({ useSessions, useWorkspaces, inRow, requests, t }: Lau
     })
   }, [requests, persistWeb])
 
+  // Whether the viewport can still hold what the panels want: a window resized
+  // smaller re-clamps an open panel rather than leaving the app squeezed under it.
+  useEffect(() => {
+    const measure = (): void => { setViewportHeight(window.innerHeight) }
+    window.addEventListener('resize', measure)
+    return () => { window.removeEventListener('resize', measure) }
+  }, [])
+
+  // The split: while the panel is open, the page itself gives up the panel's
+  // height, and this plugin's stylesheet spends the value as padding on the mount
+  // node. Written in a LAYOUT effect because the reserve and the panel appear in
+  // the same commit — after paint, the frame would be pushed up one frame late.
+  useLayoutEffect(() => {
+    if (!shellOpen) return
+    const root = document.documentElement
+    root.style.setProperty(SHELL_INSET_PROPERTY, `${Math.round(shellInset)}px`)
+    return () => { root.style.removeProperty(SHELL_INSET_PROPERTY) }
+  }, [shellOpen, shellInset])
+
   // Inside the shared strip this plugin's controls cannot step aside on their
   // own: the strip is one unit and its right edge belongs to whichever plugin
   // rendered it. So the space is RESERVED instead — the open sidebar's width goes
@@ -272,7 +327,7 @@ export function Launcher({ useSessions, useWorkspaces, inRow, requests, t }: Lau
         <WebPanel
           t={t}
           width={webWidth}
-          bottom={shellOpen ? shellHeight : 0}
+          bottom={shellOpen ? shellInset : 0}
           openRequest={request}
           onWidth={resizeWeb}
           onClose={() => { persistWeb(false) }}
@@ -282,7 +337,7 @@ export function Launcher({ useSessions, useWorkspaces, inRow, requests, t }: Lau
       {shellOpen && (
         <ShellPanel
           t={t}
-          height={shellHeight}
+          height={shellInset}
           sessionDir={sessionDir}
           onHeight={resizeShell}
           onClose={() => { persistShell(false) }}

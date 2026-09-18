@@ -45,6 +45,7 @@ import {
 import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 import type { RelayProbe } from '../shared/wire.ts'
 import { probeUrl, relaySrc } from './api.ts'
+import { fromInputMethod } from './inputmethod.ts'
 import type { WebSidebarRequest } from './sidebar.ts'
 import type { NS } from './contract.ts'
 
@@ -486,6 +487,11 @@ export function WebPanel({ t, width, bottom, openRequest, onWidth, onClose }: We
           autoComplete="off"
           onChange={(event) => { setDraft(event.target.value); setError(null) }}
           onKeyDown={(event) => {
+            // An address is typed with the same keyboards a command is (see
+            // fromInputMethod): mid-composition the Enter commits the address rather
+            // than loading a half-typed one, and Escape dismisses the candidate list
+            // rather than the field.
+            if (fromInputMethod(event)) return
             if (event.key === 'Enter') {
               event.preventDefault()
               submit()

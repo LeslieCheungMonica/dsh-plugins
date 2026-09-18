@@ -691,6 +691,17 @@ const type = async (input, value) => {
 const barButton = label => [...window.document.querySelectorAll('[data-ms="barButton"]')]
   .find(button => button.getAttribute('aria-label')?.includes(label))
 
+/**
+ * The height the open command panel takes OUT of the page, as the launcher
+ * publishes it. The stylesheet turns this one property into padding on the app's
+ * mount node — the split — so it is the whole mechanism in one readable value.
+ * @returns the raw custom-property value (empty when no panel is open).
+ */
+const shellReserve = () => window.document.documentElement.style.getPropertyValue('--ms-shell-h')
+
+/** The open command panel's own rendered height, as its inline style carries it. */
+const shellPanelHeight = () => window.document.querySelector('[data-ms="shellPanel"]')?.style.height
+
 const Launcher = entries[0].component
 await act(async () => { root.render(React.createElement(Launcher, seatProps)) })
 await settle()
@@ -718,6 +729,19 @@ await settle()
   // hosts are what people type.
   const address = panel.querySelector('[data-ms="webAddress"]')
   await type(address, `${upstream.origin.replace('http://', '')}/page/`)
+
+  // The same input-method guard the command prompt needs, asserted here too: an
+  // address is typed with the same keyboards, and an Enter that belongs to a
+  // composition must not load a half-typed one.
+  const composingAddress = new window.KeyboardEvent('keydown', {
+    key: 'Enter', bubbles: true, cancelable: true, isComposing: true,
+  })
+  await act(async () => { address.dispatchEvent(composingAddress) })
+  check('an IME\'s Enter does not load a half-typed address either',
+    composingAddress.defaultPrevented === false
+    && window.document.querySelector('[data-ms="webFrame"]') === null,
+    String(composingAddress.defaultPrevented))
+
   await act(async () => {
     address.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
   })
@@ -752,33 +776,217 @@ await settle()
   await click(barButton('下侧边栏'))
   const panel = window.document.querySelector('[data-ms="shellPanel"]')
   check('clicking the bottom control opens the command panel', panel !== null)
-  check('the command panel shows the session\'s directory',
-    panel.querySelector('[data-ms="shellDir"]').getAttribute('placeholder') === process.cwd(),
-    panel.querySelector('[data-ms="shellDir"]').getAttribute('placeholder'))
 
+  // The panel says where commands will run as REAL text. A grey placeholder is not
+  // an answer to "where am I": the operator has to be able to read the directory
+  // without typing anything first, and typing into the field is an override.
+  const dirField = panel.querySelector('[data-ms="shellDir"]')
+  check('the command panel shows the session\'s directory as its value',
+    dirField.value === process.cwd(), `value ${JSON.stringify(dirField.value)}`)
+
+  // …and the command line says the same thing in shell form, so the input row
+  // reads as this directory's prompt rather than as a bare `$`.
+  const prompt = panel.querySelector('[data-ms="shellPrompt"]')
+  check('the command prompt names the working directory',
+    prompt.textContent.startsWith('…') && prompt.textContent.endsWith('$')
+    && prompt.getAttribute('title') === process.cwd(),
+    `${JSON.stringify(prompt.textContent)} / ${String(prompt.getAttribute('title'))}`)
+
+  // "Opened by a click" must not mean "click again before typing": the panel takes
+  // the caret itself as it mounts.
   const input = panel.querySelector('[data-ms="shellInput"]')
+  check('the panel focuses its command line as it opens',
+    window.document.activeElement === input, window.document.activeElement?.tagName)
+
+  // Editing the directory field overrides the default, and the reset control
+  // exists only while an override is in force.
+  await type(dirField, '/tmp')
+  const overridden = window.document.querySelector('[data-ms="shellDir"]')
+  check('editing the directory field overrides where commands run',
+    overridden.value === '/tmp' && window.localStorage.getItem('my-sider.shell.dir') === '/tmp',
+    `${overridden.value} / ${String(window.localStorage.getItem('my-sider.shell.dir'))}`)
+  const reset = [...window.document.querySelectorAll('[data-ms="iconButton"]')]
+    .find(button => button.getAttribute('aria-label') === '恢复默认目录')
+  check('a reset control appears with the override', reset !== undefined)
+  await click(reset)
+  await settle(40)
+  const restored = window.document.querySelector('[data-ms="shellDir"]')
+  check('resetting returns the field to the session\'s directory',
+    restored.value === process.cwd() && window.localStorage.getItem('my-sider.shell.dir') === null,
+    `${restored.value} / ${String(window.localStorage.getItem('my-sider.shell.dir'))}`)
+
+  // The split, asserted where it is decided: opening the panel takes its height
+  // OUT of the page instead of floating over it, and the reserve and the panel's
+  // own height must be one number — two sources would disagree about where the
+  // page ends.
+  check('opening the panel reserves its height instead of covering the page',
+    shellReserve() === shellPanelHeight() && Number.parseFloat(shellReserve()) > 0,
+    `reserve ${JSON.stringify(shellReserve())} panel ${JSON.stringify(shellPanelHeight())}`)
+
+  // …and the plugin's own stylesheet is what spends the reserve, on the mount node
+  // the frame's percentage height descends from.
+  const skin = [...window.document.querySelectorAll('style[data-plugin-css]')]
+    .find(tag => tag.dataset.pluginCss === 'my-sider/panels')
+  check('the reserve is spent as padding on the app\'s mount node',
+    skin?.textContent.includes('padding-bottom: var(--ms-shell-h') === true,
+    String(skin?.textContent.length))
+
+  // A viewport shorter than the panel must not collapse the frame: the reserve is
+  // clamped to leave the app a usable strip, and the panel follows it down.
+  const viewport = window.innerHeight
+  Object.defineProperty(window, 'innerHeight', { value: 400, configurable: true })
+  await act(async () => { window.dispatchEvent(new window.Event('resize')) })
+  await settle(40)
+  check('a short viewport clamps what the panel takes from the page',
+    Number.parseFloat(shellReserve()) === 160, shellReserve())
+  Object.defineProperty(window, 'innerHeight', { value: viewport, configurable: true })
+  await act(async () => { window.dispatchEvent(new window.Event('resize')) })
+  await settle(40)
+  check('a restored viewport restores the panel\'s height',
+    Number.parseFloat(shellReserve()) === Math.min(300, viewport - 240), shellReserve())
+
   await type(input, 'echo from the panel')
+
+  // An IME's Enter belongs to the IME. Chinese input methods commit a composition on
+  // Enter, and that committed text arrives through `change`; a handler that takes the
+  // keydown as "run" both CANCELS the commit (preventDefault) — so the operator
+  // presses Enter again and again and nothing at all happens — and, when a commit
+  // does land first, runs whatever half-composed string was in the field (the host
+  // really did receive `p w d`, `l s` and `k s`). So: not prevented, and no run.
+  const composing = new window.KeyboardEvent('keydown', {
+    key: 'Enter', bubbles: true, cancelable: true, isComposing: true,
+  })
+  await act(async () => { input.dispatchEvent(composing) })
+  await settle(60)
+  check('an IME\'s Enter is left to the IME, not read as "run"',
+    composing.defaultPrevented === false, String(composing.defaultPrevented))
+  check('…so the composition is not submitted while it is still open',
+    window.document.querySelectorAll('[data-ms="shellEntry"]').length === 1
+    && window.document.querySelector('[data-ms="shellInput"]').value === 'echo from the panel',
+    `${String(window.document.querySelectorAll('[data-ms="shellEntry"]').length)} entr(ies)`)
+
+  // Some engines report a composition keydown only through the legacy keyCode, with no
+  // isComposing flag at all.
+  const legacyComposition = new window.KeyboardEvent('keydown', {
+    key: 'Enter', bubbles: true, cancelable: true,
+  })
+  Object.defineProperty(legacyComposition, 'keyCode', { value: 229 })
+  await act(async () => { input.dispatchEvent(legacyComposition) })
+  await settle(60)
+  check('a composition keydown reported only as keyCode 229 is left alone too',
+    legacyComposition.defaultPrevented === false, String(legacyComposition.defaultPrevented))
+
   await act(async () => {
     input.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
   })
-  // Long enough for a poll cycle (the panel polls a running command every 400 ms)
-  // plus the fake seam's own ~30 ms lifetime.
+  // Still inside the run, and deliberately so: the fake seam's process lives ~32ms
+  // but the panel learns that on its next poll (400ms), so this window is where the
+  // serialization contract is observable.
+  await settle(120)
+  const promptInput = () => window.document.querySelector('[data-ms="shellPanel"] [data-ms="shellInput"]')
+  check('the prompt shuts while a command runs, and says why',
+    promptInput().disabled === true && promptInput().getAttribute('placeholder') === '命令正在执行…',
+    `${String(promptInput().disabled)} / ${String(promptInput().getAttribute('placeholder'))}`)
+
+  // Long enough for the next poll cycle (the panel polls a running command every
+  // 400 ms) plus the fake seam's own ~30 ms lifetime.
   await settleFor(900)
 
   const refreshed = window.document.querySelector('[data-ms="shellPanel"]')
-  const runTabs = [...refreshed.querySelectorAll('[data-ms="shellRun"]')]
-  check('the panel seeded the runs the host still holds into its history',
-    runTabs.length === 2, `${String(runTabs.length)} run(s)`)
-  check('the command the operator just ran is first, and newest first is the order',
-    runTabs[0]?.textContent?.includes('echo from the panel') === true,
-    runTabs.map(tab => tab.textContent).join(' | '))
-  check('the command is echoed as a prompt', refreshed.textContent.includes('$ echo from the panel'))
-  check('the command\'s output is rendered', refreshed.textContent.includes('hello from the fake seam'),
-    refreshed.querySelector('[data-ms="shellOut"]')?.textContent)
-  check('stderr is merged into the same pane', refreshed.textContent.includes('a warning on stderr'),
-    refreshed.querySelector('[data-ms="shellOut"]')?.textContent)
+  // The terminal shape, asserted negatively: a separate row, a Run button or run
+  // tabs would each be a second place to look, which is what this panel stopped
+  // having. Their selectors must match nothing at all.
+  const stale = ['shellInputRow', 'shellRunButton', 'shellRun', 'shellRuns']
+    .filter(name => refreshed.querySelectorAll(`[data-ms="${name}"]`).length > 0)
+  check('the panel is a transcript and a prompt, with no row, Run button or run tabs',
+    stale.length === 0, stale.join(', '))
+  check('the prompt line is the transcript\'s own last line',
+    refreshed.querySelector('[data-ms="shellPane"]')?.lastElementChild?.getAttribute('data-ms')
+      === 'shellPromptLine')
+  check('the prompt comes back once the command settles', promptInput().disabled === false)
+
+  const entries = [...refreshed.querySelectorAll('[data-ms="shellEntry"]')]
+  const echoOf = entry => entry.querySelector('[data-ms="shellEchoText"]')?.textContent
+  check('every run the host still holds is in the transcript',
+    entries.length === 2, `${String(entries.length)} entr(ies)`)
+  check('the transcript reads oldest first, so the newest command is at its foot',
+    echoOf(entries[0]) === 'echo hi' && echoOf(entries.at(-1)) === 'echo from the panel',
+    entries.map(echoOf).join(' | '))
+  check('a run from before the panel opened is rendered whole, echo and output together',
+    entries[0].querySelector('[data-ms="shellEcho"]')?.textContent === '$ echo hi'
+    && entries[0].querySelector('[data-ms="shellOut"]')?.textContent.includes('hello from the fake seam'),
+    entries[0].textContent)
+
+  const newestEntry = entries.at(-1)
+  check('the entry echoes the command as a shell prompt',
+    newestEntry.querySelector('[data-ms="shellEcho"]')?.textContent.includes('$ echo from the panel'))
+  check('the command\'s output is rendered under its own echo',
+    newestEntry.querySelector('[data-ms="shellOut"]')?.textContent.includes('hello from the fake seam'),
+    newestEntry.querySelector('[data-ms="shellOut"]')?.textContent)
+  check('stderr is merged into the same output',
+    newestEntry.querySelector('[data-ms="shellOut"]')?.textContent.includes('a warning on stderr'),
+    newestEntry.querySelector('[data-ms="shellOut"]')?.textContent)
+  check('the settled entry carries its own status line',
+    newestEntry.querySelector('[data-ms="shellStatus"]')?.textContent.includes('成功'),
+    newestEntry.querySelector('[data-ms="shellStatus"]')?.textContent)
   check('the panel reports the sandbox mode the run used', refreshed.textContent.includes('workspace-write'))
-  check('the panel reports the settled exit code', refreshed.textContent.includes('成功'), refreshed.textContent.slice(0, 200))
+
+  // An empty line is a COMPLETED line in a terminal: the shell has nothing to run and
+  // reprints its prompt, which is the only acknowledgement such an Enter can give.
+  // It is not a run (so not an entry), it sits where it was pressed, and 清屏 takes it
+  // off the screen like anything else that is visible.
+  const pressEnter = async () => {
+    await act(async () => {
+      window.document.querySelector('[data-ms="shellInput"]')
+        .dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    })
+    await settle(40)
+  }
+  await pressEnter()
+  const afterBlank = window.document.querySelector('[data-ms="shellPanel"]')
+  const blanks = [...afterBlank.querySelectorAll('[data-ms="shellBlank"]')]
+  check('an Enter on an empty prompt leaves the prompt line it was pressed on',
+    blanks.length === 1 && blanks[0].textContent.trim() === '$', JSON.stringify(blanks[0]?.textContent))
+  check('…and starts no run for it',
+    afterBlank.querySelectorAll('[data-ms="shellEntry"]').length === 2,
+    String(afterBlank.querySelectorAll('[data-ms="shellEntry"]').length))
+  const paneChildren = [...afterBlank.querySelector('[data-ms="shellPane"]').children]
+  const names = paneChildren.map(child => child.getAttribute('data-ms'))
+  check('…in the place it was pressed, after the command before it and above the prompt',
+    names.lastIndexOf('shellBlank') > names.lastIndexOf('shellEntry')
+    && names.at(-1) === 'shellPromptLine', names.join(' | '))
+
+  // Whitespace is not a command either, and must not become one.
+  await type(afterBlank.querySelector('[data-ms="shellInput"]'), '   ')
+  await pressEnter()
+  const afterSpaces = window.document.querySelector('[data-ms="shellPanel"]')
+  check('a whitespace-only line is another empty line, not a command that would fail',
+    afterSpaces.querySelectorAll('[data-ms="shellBlank"]').length === 2
+    && afterSpaces.querySelectorAll('[data-ms="shellEntry"]').length === 2
+    && afterSpaces.querySelector('[data-ms="shellInput"]').value === '',
+    afterSpaces.querySelectorAll('[data-ms="shellBlank"]').length)
+  // The prompt takes the caret back after a line is taken, the way a terminal does.
+  check('the caret comes back to the new prompt line',
+    window.document.activeElement === afterSpaces.querySelector('[data-ms="shellInput"]'),
+    window.document.activeElement?.getAttribute('data-ms'))
+
+  // `clear` is the shell's own verb: the finished commands leave the screen, and the
+  // prompt stays where the next command goes.
+  const clearButton = [...afterSpaces.querySelectorAll('[data-ms="panelButton"]')]
+    .find(button => button.textContent.includes('清屏'))
+  await click(clearButton)
+  await settle(40)
+  const cleared = window.document.querySelector('[data-ms="shellPanel"]')
+  check('clearing takes the finished commands off the transcript',
+    cleared.querySelectorAll('[data-ms="shellEntry"]').length === 0,
+    String(cleared.querySelectorAll('[data-ms="shellEntry"]').length))
+  check('clearing takes the empty prompt lines with them',
+    cleared.querySelectorAll('[data-ms="shellBlank"]').length === 0,
+    String(cleared.querySelectorAll('[data-ms="shellBlank"]').length))
+  check('clearing leaves the prompt in place, and nothing left for it to clear',
+    cleared.querySelector('[data-ms="shellPromptLine"]') !== null
+    && [...cleared.querySelectorAll('[data-ms="panelButton"]')]
+      .find(button => button.textContent.includes('清屏'))?.disabled === true)
 
   await click(barButton('侧边栏'))
   await settle(60)
@@ -791,6 +999,7 @@ await settle()
 {
   await click(barButton('下侧边栏'))
   check('the bottom panel closes again', window.document.querySelector('[data-ms="shellPanel"]') === null)
+  check('the page gets its space back when the panel closes', shellReserve() === '', JSON.stringify(shellReserve()))
 }
 
 await act(async () => { root.unmount() })

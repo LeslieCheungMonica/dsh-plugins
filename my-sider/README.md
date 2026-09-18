@@ -24,14 +24,16 @@ both surfaces can be switched off independently in its Loader row.
 │                                               │ │   the page        │ │
 │                                               │ │                  │ │
 ├───────────────────────────────────────────────┴─┴──────────────────┤
-│ 下侧边栏 · 命令      /path/to/project        退出码 0  沙箱 …        │
-│ ┌ $ echo hi ───────────────────────────────────────────────────────┐ │
-│ │ $ echo hi                                                        │ │
-│ │ hi                                                               │ │
-│ └──────────────────────────────────────────────────────────────────┘ │
-│ $ [ command … ]                                        [ 执行 ]       │
+│ 下侧边栏 · 命令   /path/to/project  成功  沙箱 …    [停止][清屏][×]  │
+│ $ echo hi                                                           │
+│ hi                                                                  │
+│ 成功 · 32ms                                                         │
+│ …/dsh-plugins/my-sider $ [ 直接在这里输入，回车执行 ]                │
 └─────────────────────────────────────────────────────────────────────┘
 ```
+
+The bottom panel is not a floating overlay: it takes its height **out of** the
+page, so the frame above it is pushed up and re-laid out rather than covered.
 
 ## The launcher, and the row it shares
 
@@ -139,12 +141,41 @@ Details worth knowing:
 
 ## The bottom command panel
 
-It is a **command panel, not a terminal emulator**: one command line at a time,
-no pty, no full-screen curses programs, no interactive prompt. That scope is
-stated in the UI rather than pretended away — the input is a command LINE, and
-the header shows the directory and the file policy the command actually runs
-under.
+It is a **command panel, not a terminal emulator**: one command line at a time, no
+pty, no full-screen curses programs, no interactive prompt. The scope is stated in
+the UI rather than pretended away — the prompt is a command LINE, the header shows
+the directory, and every run reports the file policy it executed under.
 
+It is shaped like the terminal it stands in for. Commands are typed **at the
+prompt**, where they are read, not in a separate input box with a Run button beside
+it:
+
+- **One scrollback, in the order it happened.** Each run the host still holds is
+  drawn as its own block — `$ the command`, then its output, then a muted status
+  line (`成功 · 32ms`) — oldest first. Opening the panel reads those blocks back from
+  the host, so a reload comes back to the session you left, with nothing to click
+  through.
+- **The prompt is the input.** The last line of the transcript is
+  `…/project $` followed by the caret; Enter runs, ArrowUp/ArrowDown recall earlier
+  lines, Escape closes the panel. There is no second control to find. An Enter on an
+  empty line is still a line: the prompt is reprinted where it was ended (whitespace
+  is not a command either), so a key the panel heard always looks different from a key
+  it never got.
+- **An input method's Enter is left to the input method.** While a composition is
+  open, every key belongs to it: Enter commits the text (the panel runs it on the
+  NEXT Enter), arrows walk the candidate list, Escape dismisses it. Reading that
+  Enter as "run" instead would cancel the commit — the operator presses Enter and
+  nothing happens at all — or run half-composed text, which is how `pwd` once reached
+  the host as `p w d`. The web sidebar's address field shares the guard.
+- **Commands are serialized.** There is no pty behind this, so a second command
+  started while the first ran would interleave two live streams in one transcript.
+  The prompt is disabled for the duration, showing `命令正在执行…`, and comes back
+  when the run settles.
+- **The panel splits the page rather than covering it.** Its height leaves the
+  app's mount node as padding, so the conversation is re-laid out above it. The
+  height is clamped to leave the frame 240px, and `清屏` empties the screen the way
+  `clear` does in a shell: finished commands come off the transcript, a running one
+  keeps printing.
 - **The command is evaluated by a login shell** (`bash -lc` by default), so
   quoting, pipes, globs, and `&&` all behave. That is the feature.
 - **It runs under the deployment's file policy.** The argv goes through
@@ -154,17 +185,17 @@ under.
   actually executed under is reported on every run and shown in the panel**,
   because confinement the operator cannot see turns a write failure into a
   mystery.
-- **The directory** is the current session's project. A session no workspace
-  accounts for has no project (a real state), so the panel falls back to the
-  directory the host was started in — and the header's field lets you override
-  either, persistently.
+- **The directory** is the current session's project, shown in the header's field as
+  real text — editing that field overrides it, persistently, and `⟳` goes back to
+  the default. A session no workspace accounts for has no project (a real state), so
+  the panel falls back to the directory the host was started in.
 - **Output is a window with absolute offsets.** Each poll sends the byte offset
   already rendered and appends what followed, so a reload, a remount, or a slow
   frame resumes exactly where it was. When the host has dropped the front of a
   run's buffer it answers from a LATER offset and the panel prints a gap line
   there instead of pretending the output is whole.
-- **Runs are retained** (the last `config.shell.history` settled ones), so
-  switching to another tab and back, or reloading, does not lose a run.
+- **Runs are retained** (the last `config.shell.history` settled ones), which is
+  what lets the transcript be rebuilt at all.
 - **Stopping is explicit and idempotent**, and safe on a command that already
   exited. A command that outlives `config.shell.timeoutMs` is terminated, and the
   panel says so rather than showing a log that just stops.

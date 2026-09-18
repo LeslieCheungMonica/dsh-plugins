@@ -1,20 +1,28 @@
 /**
  * This plugin's stylesheet, as one string injected by `apply`.
  *
- * Everything here belongs to this plugin: the two panels and the launcher bar
- * are this plugin's own surfaces, marked with `data-ms` attributes and
- * `--dsh-my-sider-*` local properties. Nothing is re-styled that this plugin
- * does not own — the frame, the conversation, and the shipped sidebar keep their
- * own CSS, and this file only consumes ui-theme's semantic tokens
- * (`--dsw-alias-*`) to sit inside that design instead of beside it.
+ * Nearly everything here belongs to this plugin: the two panels and the launcher
+ * bar are this plugin's own surfaces, marked with `data-ms` attributes and
+ * `--dsh-my-sider-*` local properties. The frame, the conversation, and the
+ * shipped sidebar keep their own CSS, and this file only consumes ui-theme's
+ * semantic tokens (`--dsw-alias-*`) to sit inside that design instead of beside
+ * it.
  *
- * Two structural facts worth stating:
+ * THREE structural facts worth stating:
  *
  * - The panels are rendered through a portal onto `document.body`, so they are
  *   `position: fixed` against the viewport and cannot be trapped inside a
  *   column's transform or scroll container.
  * - The launcher bar lives inside the frame's `shell.overlay` layer, which is
  *   click-through by design; a floating group in it must claim its own hits.
+ * - The command panel SPLITS the page rather than covering it, and that is the one
+ *   exception to "only this plugin's own surfaces": the reserve is spent as
+ *   padding on the app's MOUNT NODE (`#root`), which is the element the frame's
+ *   percentage height descends from. A portal cannot be a grid track of the frame,
+ *   and no layout seam exists for a bottom inset, so the space has to be taken
+ *   from the app's own root. It is exactly one rule, it is inert unless the panel
+ *   is open (the launcher writes `--ms-shell-h` on `<html>` only then), and it is
+ *   marked below.
  *
  * @module my-sider/client/styles
  */
@@ -23,6 +31,32 @@
 export const STYLE_TAG_ID = 'my-sider/panels'
 
 export const STYLES = `
+/* ── the split (the one host element this file sizes) ─────────────────────── */
+
+/* See the module note: the open command panel's height is taken OUT of the page
+   instead of floating over it. The mount node gives up exactly that much room at
+   the bottom, and since the frame inside is \`height: 100%\`, the conversation is
+   re-laid out above the panel rather than hidden behind it. Border-box is what
+   makes the padding come out of the 100% height instead of being added to it. */
+html body > #root {
+  box-sizing: border-box;
+  padding-bottom: var(--ms-shell-h, 0px);
+  transition: padding-bottom 160ms var(--ds-ease-in-out, ease-out);
+}
+
+/* A drag writes the reserve at pointer cadence; easing that would detach the page
+   from the handle, so the gesture suspends it (the frame's own columns do the
+   same with data-dragging). */
+html[data-ms-dragging] body > #root {
+  transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html body > #root {
+    transition: none;
+  }
+}
+
 [data-ms] {
   --dms-radius: 10px;
   --dms-gap: 8px;
@@ -416,81 +450,64 @@ body[data-ds-dark-theme] [data-ms] {
   font-size: 11px;
 }
 
-[data-ms='shellRuns'] {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 8px;
-  border-bottom: 1px solid var(--dsw-alias-border-l1);
-  overflow-x: auto;
-  scrollbar-width: thin;
+/* One command and its answer. Spacing, not borders: a scrollback has no boxes in
+   it, and every box would spend a line of a panel that may only be 120px tall. */
+[data-ms='shellEntry'] + [data-ms='shellEntry'] {
+  margin-top: 10px;
 }
 
-[data-ms='shellRun'] {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  flex: none;
-  max-width: 240px;
-  height: 22px;
-  padding: 0 8px;
-  border: 1px solid var(--dsw-alias-border-l1);
-  border-radius: 999px;
-  background: var(--dsw-alias-bg-layer-2);
-  color: var(--dsw-alias-label-tertiary);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
-  cursor: pointer;
-}
-
-[data-ms='shellRun'][data-active='true'] {
-  border-color: var(--dsw-alias-border-l3);
+/* An empty prompt line: the line the operator ended with nothing on it, reprinted
+   where they ended it. Spaced like an entry so pressing Enter visibly moves the prompt
+   down instead of looking like a panel that never heard the key. */
+[data-ms='shellBlank'] {
+  margin-top: 10px;
   color: var(--dsw-alias-label-primary);
 }
 
-[data-ms='shellRunText'] {
-  max-width: 190px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-[data-ms='shellRunDot'] {
-  flex: none;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--dsw-alias-label-tertiary);
-}
-
-[data-ms='shellRunDot'][data-tone='ok'] { background: var(--dsw-alias-state-success-primary); }
-[data-ms='shellRunDot'][data-tone='failed'] { background: var(--dsw-alias-state-error-primary); }
-[data-ms='shellRunDot'][data-tone='running'] { background: var(--dsw-alias-label-primary-bluish); }
-
-[data-ms='shellPane'] {
-  position: relative;
-  flex: 1;
-  min-height: 0;
-  padding: 8px 10px;
-  overflow: auto;
-  background: var(--dsw-alias-markdown-code-block);
-}
-
-[data-ms='shellOut'] {
-  margin: 0;
-  font-family: var(--dsw-font-markdown-code-block-font-family, ui-monospace, SFMono-Regular, Menlo, monospace);
-  font-size: 12px;
-  line-height: 1.55;
+/* The echo line is plain text, not two flex items: the space between the mark and
+   the command is part of the line ('$ cmd'), because that is what a shell prints and
+   what a copy of the line should give back. */
+[data-ms='shellEcho'] {
   white-space: pre-wrap;
   word-break: break-word;
   color: var(--dsw-alias-label-primary);
 }
 
-[data-ms='shellNote'] {
-  color: var(--dsw-alias-label-tertiary);
-  font-size: 12px;
+[data-ms='shellEchoMark'] {
+  color: var(--dsw-alias-label-primary-bluish);
 }
+
+[data-ms='shellPane'] {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  padding: 8px 10px 10px;
+  overflow: auto;
+  background: var(--dsw-alias-markdown-code-block);
+  /* The transcript is one monospace column, and the caret's line is its last line:
+     the pane is text, not a list of cards. */
+  font-family: var(--dsw-font-markdown-code-block-font-family, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--dsw-alias-label-primary);
+}
+
+[data-ms='shellOut'] {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--dsw-alias-label-secondary);
+}
+
+/* What a shell tells you between commands — how the last one ended, and how long it
+   took. Muted, because it is the frame around the output rather than output. */
+[data-ms='shellStatus'] {
+  margin-top: 2px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+}
+
+[data-ms='shellStatus'][data-tone='failed'] { color: var(--dsw-alias-state-error-primary); }
 
 [data-ms='shellError'] {
   display: flex;
@@ -519,57 +536,74 @@ body[data-ds-dark-theme] [data-ms] {
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.16);
 }
 
-[data-ms='shellInputRow'] {
-  flex: none;
+/* The prompt line: the transcript's last line, and the panel's only input. */
+[data-ms='shellPromptLine'] {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 10px;
-  border-top: 1px solid var(--dsw-alias-border-l1);
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 10px;
 }
 
 [data-ms='shellPrompt'] {
   flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  /* The prompt is the panel's own label for the input that follows it, so it must
+     never win a width contest with the command line: it yields first. */
+  max-width: 40%;
   color: var(--dsw-alias-label-primary-bluish);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 13px;
 }
 
+/* The directory half. The identifying part of a path is its TAIL, so the panel
+   keeps the last two segments itself ('…/dsh-plugins/my-sider'); what is left for
+   CSS is one absurdly long segment name overflowing the 40% cap, and that is
+   clipped at the end. (The usual 'direction: rtl' trick would move the ellipsis to
+   the left, and would also reorder a path containing an RTL directory name — not
+   worth it for a label that is already shortened.) */
+[data-ms='shellPromptDir'] {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+[data-ms='shellPromptMark'] {
+  flex: none;
+  color: var(--dsw-alias-label-primary-bluish);
+}
+
+/* A terminal has no input box: the caret sits in the scrollback on the prompt's own
+   baseline, and the row it is on IS the field. So: no border, no background, the
+   pane's own font, and no focus ring — the caret is the affordance. */
 [data-ms='shellInput'] {
   flex: 1;
   min-width: 0;
-  height: 28px;
-  padding: 0 8px;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 7px;
-  background: var(--dsw-alias-bg-base);
-  color: var(--dsw-alias-label-primary);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  caret-color: var(--dsw-alias-label-primary);
 }
 
 [data-ms='shellInput']:focus {
   outline: none;
-  border-color: var(--dms-accent);
 }
 
-[data-ms='shellRunButton'] {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  height: 28px;
-  padding: 0 12px;
-  border: 1px solid var(--dms-accent);
-  border-radius: 7px;
-  background: var(--dms-accent);
-  color: var(--dms-accent-label);
-  font-size: 12px;
-  cursor: pointer;
+[data-ms='shellInput']::placeholder {
+  color: var(--dsw-alias-label-tertiary);
 }
 
-[data-ms='shellRunButton']:disabled {
-  opacity: 0.45;
+/* Disabled means one thing here — a command is running and this panel cannot queue
+   another — and the placeholder says so, so the field must not fade into looking
+   broken. */
+[data-ms='shellInput']:disabled {
+  opacity: 1;
   cursor: default;
 }
 
