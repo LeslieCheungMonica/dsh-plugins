@@ -45,13 +45,31 @@ After that it launches normally, including from Launchpad.
 ## Verifying
 
 ```sh
-# Discovery, attach probe, free-port pick — no GUI, no side effects.
+# Discovery, attach probe, free-port pick — no GUI, no side effects. The
+# discovery half is hermetic: it builds a throwaway nvm/pnpm/volta tree under
+# /tmp and asserts each install is found, so it passes on a machine with no
+# DSH at all.
 "dist/DSH Web.app/Contents/MacOS/DSHWeb" --selftest
 
 # Also start and stop a real host, against an isolated DSH_HOME and an unused
 # port, so nothing touches your own server or ~/.dsh:
 DSH_SELFTEST_SPAWN=1 DSH_HOME=/tmp/dsh-app-test DSH_WEB_PORT=3199 \
   "dist/DSH Web.app/Contents/MacOS/DSHWeb" --selftest
+```
+
+`CFFIXED_USER_HOME` redirects the home every `~` in discovery resolves against
+(Foundation ignores `$HOME`, so `env -i HOME=…` does *not* work). That makes the
+recipient's machine reachable from yours — an nvm-only install, with no
+well-known shim and no checkout to fall back on:
+
+```sh
+H=/tmp/dsh-recipient
+mkdir -p "$H/.nvm/versions/node/v22.22.2/bin"
+printf '#!/bin/sh\nexit 0\n' > "$H/.nvm/versions/node/v22.22.2/bin/dsh"
+chmod +x "$H/.nvm/versions/node/v22.22.2/bin/dsh"
+CFFIXED_USER_HOME="$H" DSH_CHECKOUT=/nonexistent PATH=/usr/bin:/bin \
+  "dist/DSH Web.app/Contents/MacOS/DSHWeb" --selftest
+# → selftest: cli=/tmp/dsh-recipient/.nvm/versions/node/v22.22.2/bin/dsh
 ```
 
 The running app also reports what its window is rendering, four seconds after
@@ -77,17 +95,28 @@ Every knob is an environment variable, so it can be set for one launch
 | `DSH_WEB_HOST` | `127.0.0.1` | Address the app talks to |
 | `DSH_BIN` | auto | Explicit `dsh` executable, beating all discovery |
 | `DSH_NODE` | auto | Explicit `node`, when the fallback CLI path is used |
-| `DSH_CHECKOUT` | `~/vscodeProjects/deepseek-harness` | Checkout whose `apps/cli/lib/bin.js` is the last-resort CLI |
+| `DSH_CHECKOUT` | unset | Checkout whose `apps/cli/lib/bin.js` is the last-resort CLI. No guess is made when it is unset: the app is shipped to other machines, and the builder's own checkout path exists on none of them. |
 | `DSH_START_TIMEOUT` | `180` | Seconds to wait for a freshly started host to serve |
 
 CLI discovery order: `$DSH_BIN` → `~/.local/bin/dsh` → `/usr/local/bin/dsh` →
-`/opt/homebrew/bin/dsh` → `~/bin/dsh` → `dsh` on `PATH` → `node
-$DSH_CHECKOUT/apps/cli/lib/bin.js`.
+`/opt/homebrew/bin/dsh` → `~/bin/dsh` → `dsh` on `PATH` → a `dsh` beside the node
+this app would use → `~/Library/pnpm/dsh` → `~/.volta/bin/dsh` → every
+`~/.nvm/versions/node/*/bin/dsh` (highest version first) → `node
+$DSH_CHECKOUT/apps/cli/lib/bin.js`, and that last one **only** when
+`DSH_CHECKOUT` is set.
 
-A Finder-launched app inherits a minimal `PATH`, so the child process is handed
-an environment whose `PATH` starts with the directory of the `node` binary that
-belongs to the discovered CLI — including nvm-managed installs under
-`~/.nvm/versions/node`, which are otherwise invisible to it.
+The node-manager entries matter more than they look. A Finder-launched app
+inherits a minimal `PATH`, so a `dsh` installed by nvm, fnm, volta or pnpm is
+invisible to it: `npm i -g @deepseek-ai/dsh` under nvm lands in
+`~/.nvm/versions/node/<version>/bin/dsh`, which no shell startup file can hand
+to an app launched from Launchpad. The node-adjacent rule covers fnm and volta
+(whose installs can live outside the home entirely) by looking beside the `node`
+binary the app already resolved.
+
+A Finder-launched app also cannot see the shell's `PATH` for the child process,
+so the child is handed an environment whose `PATH` starts with the directory of
+the `node` binary that belongs to the discovered CLI — including nvm-managed
+installs under `~/.nvm/versions/node`, which are otherwise invisible to it.
 
 ## Files
 
@@ -130,9 +159,16 @@ ARC. Nothing here is Swift-specific; the file layout would port either way.
 
 ## Known limitations
 
+- **The DMG carries no DSH.** The app is a viewer for a `dsh web` host, so an
+  operator needs the CLI first: `npm i -g @deepseek-ai/dsh`. Without it the
+  window explains that and offers a retry, but it cannot install one. The npm
+  package named plain `dsh` is an unrelated third-party shell — installing that
+  will not help.
 - **Unsigned/notarization-free** — the first launch needs the operator's
   approval, and on a machine with a stricter Gatekeeper policy the app may be
-  refused outright until it is signed.
+  refused outright until it is signed. On macOS 15+ the old right-click → Open
+  shortcut no longer bypasses Gatekeeper; use System Settings → Privacy &
+  Security → Open Anyway.
 - **The window is a viewer, not a supervisor.** If the attached host dies, the
   page stops updating until you reload (⌘R) — the app will re-resolve then, and
   start a host if none is left.

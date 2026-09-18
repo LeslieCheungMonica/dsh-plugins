@@ -67,10 +67,25 @@ typedef NS_ENUM(NSInteger, DSHResolutionKind) {
 @interface DSHServer : NSObject
 
 /**
- * The checkout this app falls back to when no installed CLI exists.
- * @returns an absolute path (`$DSH_CHECKOUT` wins over the default).
+ * The checkout the operator pointed at, whose `apps/cli/lib/bin.js` is the
+ * last-resort CLI. There is no built-in default: guessing a path that only
+ * exists on the machine this app was built on would send every other operator
+ * to a directory they never created.
+ * @returns the expanded `$DSH_CHECKOUT`, or nil when it is unset or empty.
  */
-+ (NSString *)defaultCheckoutPath;
++ (nullable NSString *)configuredCheckoutPath;
+
+/**
+ * The text shown when no `dsh` command could be found.
+ *
+ * A separate function because it is the whole first-run experience for an
+ * operator who has not installed DSH yet: it has to name the places that were
+ * actually searched, and nothing else.
+ *
+ * @param checkout - the configured checkout, or nil; named only when it exists.
+ * @returns operator-facing failure text.
+ */
++ (NSString *)missingCLIMessageWithCheckout:(nullable NSString *)checkout;
 
 /** Port this instance resolved to, or 0 before resolution. */
 @property (nonatomic, readonly) NSInteger port;
@@ -114,6 +129,27 @@ typedef NS_ENUM(NSInteger, DSHResolutionKind) {
  * @returns the display path, or nil when nothing was discovered.
  */
 - (nullable NSString *)discoveredCLIDisplay;
+
+/**
+ * Every *usable* `dsh` command for one home directory, in priority order.
+ *
+ * Each returned path exists and is executable; discovery is the first element.
+ * Split out from discovery so the search order is testable against a synthetic
+ * home instead of the operator's real one: a `dsh` installed through a node
+ * version manager (nvm, fnm, volta) or pnpm lives somewhere neither the fixed
+ * shim list nor a Finder-launched app's minimal `PATH` can reach.
+ *
+ * @param home - the user's home directory to resolve `~`-relative candidates against.
+ * @param nodePath - the node binary the app would use, or nil; a `dsh` installed
+ *   by that node's own `npm -g` sits beside it.
+ * @param explicitPath - `$DSH_BIN`, or nil.
+ * @param onPath - `dsh` as found on `PATH`, or nil.
+ * @returns absolute executable paths, highest priority first.
+ */
++ (NSArray<NSString *> *)cliCandidatesWithHome:(NSString *)home
+                                      nodePath:(nullable NSString *)nodePath
+                                  explicitPath:(nullable NSString *)explicitPath
+                                        onPath:(nullable NSString *)onPath;
 
 @end
 

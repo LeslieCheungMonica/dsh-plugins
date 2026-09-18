@@ -348,6 +348,147 @@
 
 #pragma mark - Entry point
 
+/** Create an executable stub at `path`, making its parents as needed. */
+static BOOL DSHWriteStub(NSString *path) {
+    NSFileManager *manager = [NSFileManager defaultManager];
+    [manager createDirectoryAtPath:[path stringByDeletingLastPathComponent]
+       withIntermediateDirectories:YES attributes:nil error:NULL];
+    if (![manager createFileAtPath:path contents:[@"#!/bin/sh\n" dataUsingEncoding:NSUTF8StringEncoding]
+                        attributes:nil]) { return NO; }
+    return [manager setAttributes:@{NSFilePosixPermissions: @(0755)} ofItemAtPath:path error:NULL];
+}
+
+/**
+ * CLI discovery against a synthetic home: a `dsh` installed through nvm, fnm or
+ * pnpm must be found, because a Finder-launched app's minimal `PATH` cannot
+ * reach any of them.
+ *
+ * Hermetic on purpose — it builds its own tree under `/tmp` and never consults
+ * the operator's real home, so it passes on a machine with no DSH at all.
+ * @returns the number of failed checks.
+ */
+static int DSHRunDiscoveryChecks(void) {
+    NSFileManager *manager = [NSFileManager defaultManager];
+    // A fixed root, not a pid-derived one: a run that dies mid-check leaves its
+    // tree behind, and the next run should sweep it rather than accumulate.
+    NSString *root = @"/tmp/dsh-discovery-selftest";
+    [manager removeItemAtPath:root error:NULL];
+
+    NSString *home = [root stringByAppendingPathComponent:@"home"];
+    NSString *nvmOld = [home stringByAppendingPathComponent:@".nvm/versions/node/v18.20.8/bin"];
+    NSString *nvmNew = [home stringByAppendingPathComponent:@".nvm/versions/node/v22.22.2/bin"];
+    NSString *pnpm = [home stringByAppendingPathComponent:@"Library/pnpm"];
+    NSString *volta = [home stringByAppendingPathComponent:@".volta/bin"];
+    // fnm keeps its installs outside the home entirely; only the node path
+    // knows where it lives, which is why the node-adjacent rule matters.
+    NSString *fnm = [root stringByAppendingPathComponent:@"fnm/node-versions/v20.11.0/installation/bin"];
+
+    NSArray<NSString *> *stubs = @[
+        [nvmOld stringByAppendingPathComponent:@"dsh"], [nvmOld stringByAppendingPathComponent:@"node"],
+        [nvmNew stringByAppendingPathComponent:@"dsh"], [nvmNew stringByAppendingPathComponent:@"node"],
+        [pnpm stringByAppendingPathComponent:@"dsh"],
+        [volta stringByAppendingPathComponent:@"dsh"],
+        [fnm stringByAppendingPathComponent:@"dsh"], [fnm stringByAppendingPathComponent:@"node"],
+    ];
+    for (NSString *stub in stubs) {
+        if (!DSHWriteStub(stub)) { printf("discovery: setup failed for %s\n", stub.UTF8String); return 1; }
+    }
+
+    NSString *fnmNode = [fnm stringByAppendingPathComponent:@"node"];
+    NSString *fnmDsh = [fnm stringByAppendingPathComponent:@"dsh"];
+    NSString *explicit = [root stringByAppendingPathComponent:@"explicit/dsh"];
+    DSHWriteStub(explicit);
+
+    NSArray<NSString *> *found = [DSHServer cliCandidatesWithHome:home
+                                                        nodePath:fnmNode
+                                                    explicitPath:nil
+                                                          onPath:nil];
+    __block int failures = 0;
+    void (^expect)(BOOL, NSString *) = ^(BOOL ok, NSString *what) {
+        if (!ok) { printf("discovery: FAIL %s\n", what.UTF8String); failures++; }
+        else { printf("discovery: ok   %s\n", what.UTF8String); }
+    };
+
+    NSString *nvmNewDsh = [nvmNew stringByAppendingPathComponent:@"dsh"];
+    NSString *nvmOldDsh = [nvmOld stringByAppendingPathComponent:@"dsh"];
+    expect([found containsObject:nvmNewDsh], @"nvm install is found");
+    expect([found containsObject:nvmOldDsh], @"every nvm version is found");
+    expect([found indexOfObject:nvmNewDsh] < [found indexOfObject:nvmOldDsh],
+           @"highest nvm version wins");
+    expect([found containsObject:[pnpm stringByAppendingPathComponent:@"dsh"]], @"pnpm global is found");
+    expect([found containsObject:[volta stringByAppendingPathComponent:@"dsh"]], @"volta global is found");
+    expect([found containsObject:fnmDsh], @"a dsh beside the node we would use is found");
+
+    // Order: an explicit $DSH_BIN still beats everything, and the machine's
+    // real home never leaks into a synthetic one.
+    NSArray<NSString *> *withExplicit = [DSHServer cliCandidatesWithHome:home
+                                                               nodePath:fnmNode
+                                                           explicitPath:explicit
+                                                                 onPath:nil];
+    expect(withExplicit.count > 0 && [withExplicit.firstObject isEqualToString:explicit],
+           @"$DSH_BIN outranks every discovered path");
+    for (NSString *candidate in found) {
+        expect(![candidate hasPrefix:NSHomeDirectory()],
+               [NSString stringWithFormat:@"candidate stays inside the synthetic home: %@", candidate]);
+    }
+
+    // A home with no DSH anywhere yields nothing, rather than the operator's own.
+    NSArray<NSString *> *empty = [DSHServer cliCandidatesWithHome:[root stringByAppendingPathComponent:@"empty-home"]
+                                                        nodePath:nil explicitPath:nil onPath:nil];
+    expect(empty.count == 0, @"an empty home yields no candidates");
+
+    [manager removeItemAtPath:root error:NULL];
+    return failures;
+}
+
+/**
+ * The checkout fallback and the first-run failure text.
+ *
+ * Hermetic: it drives `$DSH_CHECKOUT` through `setenv`, which is what
+ * `NSProcessInfo.environment` actually reads. The environment is restored
+ * before returning, so a caller's own `DSH_CHECKOUT` still reaches discovery.
+ * @returns the number of failed checks.
+ */
+static int DSHRunCheckoutChecks(void) {
+    __block int failures = 0;
+    void (^expect)(BOOL, NSString *) = ^(BOOL ok, NSString *what) {
+        if (!ok) { printf("checkout: FAIL %s\n", what.UTF8String); failures++; }
+        else { printf("checkout: ok   %s\n", what.UTF8String); }
+    };
+
+    NSString *saved = [NSProcessInfo processInfo].environment[@"DSH_CHECKOUT"];
+
+    // The whole point: an app built on one machine must not assume that
+    // machine's layout on anybody else's.
+    unsetenv("DSH_CHECKOUT");
+    NSString *unset = [DSHServer configuredCheckoutPath];
+    expect(unset == nil, @"no checkout is assumed when $DSH_CHECKOUT is unset");
+
+    setenv("DSH_CHECKOUT", "", 1);
+    expect([DSHServer configuredCheckoutPath] == nil, @"an empty $DSH_CHECKOUT counts as unset");
+
+    setenv("DSH_CHECKOUT", "~/some-checkout", 1);
+    expect([[DSHServer configuredCheckoutPath] isEqualToString:
+            [@"~/some-checkout" stringByExpandingTildeInPath]],
+           @"$DSH_CHECKOUT is expanded against the home directory");
+
+    // First-run text: name what was searched, and only what was configured.
+    // Asserting on the home directory rather than on any one builder path keeps
+    // this honest without baking that path into the shipped binary.
+    NSString *bare = [DSHServer missingCLIMessageWithCheckout:nil];
+    expect(![bare containsString:NSHomeDirectory()], @"no machine-specific home path leaks into the failure text");
+    expect(![bare containsString:@"apps/cli/lib/bin.js"], @"no checkout entry point leaks either");
+    expect([bare containsString:@"DSH_BIN"], @"the failure text still says how to point at a dsh");
+    expect([bare containsString:@"@deepseek-ai/dsh"], @"the failure text says how to install dsh");
+    expect([bare containsString:@"pnpm"], @"the failure text names the node-manager locations searched");
+    NSString *configured = [DSHServer missingCLIMessageWithCheckout:@"/opt/checkout"];
+    expect([configured containsString:@"/opt/checkout/apps/cli/lib/bin.js"],
+           @"a configured checkout is named in the failure text");
+
+    if (saved != nil) { setenv("DSH_CHECKOUT", saved.UTF8String, 1); } else { unsetenv("DSH_CHECKOUT"); }
+    return failures;
+}
+
 /**
  * Headless verification of everything except the window: CLI discovery, the
  * attach probe, and — with `DSH_SELFTEST_SPAWN=1` — a real host start and stop.
@@ -356,12 +497,20 @@
  * @returns the process exit code.
  */
 static int DSHRunSelfTest(void) {
+    int failures = DSHRunDiscoveryChecks() + DSHRunCheckoutChecks();
+    printf("selftest: local checks %s\n", failures == 0 ? "OK" : "FAIL");
+    if (failures != 0) { return 1; }
+
     DSHServer *server = [[DSHServer alloc] init];
-    printf("selftest: checkout=%s\n", [DSHServer defaultCheckoutPath].UTF8String);
+    NSString *checkout = [DSHServer configuredCheckoutPath];
+    printf("selftest: checkout=%s\n", checkout != nil ? checkout.UTF8String : "(none configured)");
 
     NSString *cli = [server discoveredCLIDisplay];
     if (cli == nil) {
         printf("selftest: FAIL no dsh CLI discovered\n");
+        // Print what the window would show, so the headless run is a faithful
+        // preview of the first-run experience rather than a terse code.
+        printf("%s\n", [DSHServer missingCLIMessageWithCheckout:[DSHServer configuredCheckoutPath]].UTF8String);
         return 1;
     }
     printf("selftest: cli=%s\n", cli.UTF8String);

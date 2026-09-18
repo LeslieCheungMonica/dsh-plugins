@@ -148,12 +148,8 @@
     }
     NSArray<NSString *> *cli = [self discoveredCLI];
     if (cli == nil) {
-        return [DSHResolution kind:DSHResolutionKindFailed port:0 message:
-                [NSString stringWithFormat:
-                 @"找不到 `dsh` 命令。\n\n已检查：$DSH_BIN、~/.local/bin/dsh、/usr/local/bin/dsh、"
-                 @"/opt/homebrew/bin/dsh、你的 PATH，以及检出目录 %@/apps/cli/lib/bin.js。\n\n"
-                 @"可以显式指定后再启动：\n  DSH_BIN=/path/to/dsh open -a \"DSH Web\"",
-                 [DSHServer defaultCheckoutPath]]];
+        return [DSHResolution kind:DSHResolutionKindFailed port:0
+                           message:[DSHServer missingCLIMessageWithCheckout:[DSHServer configuredCheckoutPath]]];
     }
 
     report([NSString stringWithFormat:@"正在启动宿主：%@ web --port %ld", cli.firstObject, (long)freePort]);
@@ -290,11 +286,72 @@
 
 #pragma mark CLI discovery
 
-/** The checkout the app falls back to when no installed CLI exists. */
-+ (NSString *)defaultCheckoutPath {
++ (NSArray<NSString *> *)cliCandidatesWithHome:(NSString *)home
+                                      nodePath:(nullable NSString *)nodePath
+                                  explicitPath:(nullable NSString *)explicitPath
+                                        onPath:(nullable NSString *)onPath {
+    NSFileManager *manager = [NSFileManager defaultManager];
+    NSMutableArray<NSString *> *candidates = [NSMutableArray array];
+    void (^offer)(NSString *) = ^(NSString *path) {
+        if (path.length == 0 || [candidates containsObject:path]) { return; }
+        if ([manager isExecutableFileAtPath:path]) { [candidates addObject:path]; }
+    };
+
+    // The operator's explicit choice beats every guess below.
+    offer([explicitPath stringByExpandingTildeInPath]);
+    for (NSString *relative in @[@".local/bin/dsh", @"bin/dsh"]) {
+        offer([home stringByAppendingPathComponent:relative]);
+    }
+    offer(@"/usr/local/bin/dsh");
+    offer(@"/opt/homebrew/bin/dsh");
+    // A Finder-launched app inherits a minimal PATH, so this rarely hits, but a
+    // terminal launch should keep respecting the shell's own choice.
+    offer(onPath);
+
+    // A `dsh` installed by the npm that ships with the node this app would use
+    // lives beside that node. This is what makes nvm, fnm, volta and plain
+    // Homebrew installs reachable without enumerating each manager.
+    if (nodePath.length > 0) {
+        offer([[nodePath stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"dsh"]);
+    }
+    // pnpm and volta keep their shims outside any node version directory.
+    offer([[home stringByAppendingPathComponent:@"Library/pnpm"] stringByAppendingPathComponent:@"dsh"]);
+    offer([[home stringByAppendingPathComponent:@".volta/bin"] stringByAppendingPathComponent:@"dsh"]);
+
+    // Every nvm-managed node, highest version first, for the case where the
+    // node we resolved is not the one that carries the install.
+    NSString *versions = [home stringByAppendingPathComponent:@".nvm/versions/node"];
+    NSArray<NSString *> *entries = [manager contentsOfDirectoryAtPath:versions error:NULL];
+    for (NSString *entry in [[entries sortedArrayUsingSelector:@selector(compare:)] reverseObjectEnumerator]) {
+        offer([[[versions stringByAppendingPathComponent:entry]
+                stringByAppendingPathComponent:@"bin"] stringByAppendingPathComponent:@"dsh"]);
+    }
+    return candidates;
+}
+
++ (nullable NSString *)configuredCheckoutPath {
     NSString *configured = [NSProcessInfo processInfo].environment[@"DSH_CHECKOUT"];
-    if (configured.length > 0) { return configured; }
-    return [@"~/vscodeProjects/deepseek-harness" stringByExpandingTildeInPath];
+    if (configured.length == 0) { return nil; }
+    return [configured stringByExpandingTildeInPath];
+}
+
++ (NSString *)missingCLIMessageWithCheckout:(nullable NSString *)checkout {
+    NSMutableString *message = [NSMutableString stringWithString:
+        @"找不到 `dsh` 命令。\n\n"
+        @"已检查：$DSH_BIN、~/.local/bin/dsh、/usr/local/bin/dsh、/opt/homebrew/bin/dsh、~/bin/dsh、PATH，"
+        @"以及 node 版本管理器与 pnpm 的安装位置（~/.nvm/versions/node/*/bin、~/Library/pnpm、~/.volta/bin）。\n\n"];
+    // Only name a checkout when the operator actually configured one: an
+    // unconfigured app has no checkout to report, and inventing a path here is
+    // what used to send every other operator to the builder's own directory.
+    if (checkout.length > 0) {
+        [message appendFormat:@"配置的检出目录 %@/apps/cli/lib/bin.js 也不存在。\n\n", checkout];
+    }
+    [message appendString:
+        @"先装一个再重试：\n  npm i -g @deepseek-ai/dsh\n\n"
+        @"或显式指定后启动：\n"
+        @"  DSH_BIN=/path/to/dsh open -a \"DSH Web\"\n"
+        @"  DSH_CHECKOUT=/path/to/deepseek-harness open -a \"DSH Web\""];
+    return message;
 }
 
 - (nullable NSString *)discoveredCLIDisplay {
@@ -309,26 +366,18 @@
  */
 - (nullable NSArray<NSString *> *)discoveredCLI {
     NSFileManager *manager = [NSFileManager defaultManager];
-    NSMutableArray<NSString *> *shims = [NSMutableArray array];
-    if (_explicitBinary.length > 0) {
-        [shims addObject:[_explicitBinary stringByExpandingTildeInPath]];
-    }
-    for (NSString *candidate in @[@"~/.local/bin/dsh", @"/usr/local/bin/dsh",
-                                  @"/opt/homebrew/bin/dsh", @"~/bin/dsh"]) {
-        [shims addObject:[candidate stringByExpandingTildeInPath]];
-    }
-    NSString *onPath = [self executableOnPath:@"dsh"];
-    if (onPath != nil) { [shims addObject:onPath]; }
-
-    for (NSString *shim in shims) {
-        if ([manager isExecutableFileAtPath:shim]) { return @[shim]; }
-    }
-
-    NSString *checkout = [DSHServer defaultCheckoutPath];
-    NSString *entry = [checkout stringByAppendingPathComponent:@"apps/cli/lib/bin.js"];
     NSString *node = [self findNode];
-    if ([manager fileExistsAtPath:entry] && node != nil) {
-        return @[node, entry];
+    NSArray<NSString *> *candidates = [DSHServer cliCandidatesWithHome:NSHomeDirectory()
+                                                             nodePath:node
+                                                         explicitPath:_explicitBinary
+                                                               onPath:[self executableOnPath:@"dsh"]];
+    if (candidates.count > 0) { return @[candidates.firstObject]; }
+
+    // Nothing installed: run the checkout's own CLI through the node we found.
+    NSString *checkout = [DSHServer configuredCheckoutPath];
+    if (node != nil && checkout != nil) {
+        NSString *entry = [checkout stringByAppendingPathComponent:@"apps/cli/lib/bin.js"];
+        if ([manager fileExistsAtPath:entry]) { return @[node, entry]; }
     }
     return nil;
 }
