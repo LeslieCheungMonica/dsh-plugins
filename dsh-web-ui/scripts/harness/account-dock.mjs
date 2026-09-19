@@ -41,6 +41,7 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
 const { createElement: h, act, Fragment, useSyncExternalStore } = await import('react')
 const { createRoot } = await import('react-dom/client')
+const { createPortal } = await import('react-dom')
 const {
   AccountDock, PluginsDialog, SkillsDialog, UsagePanel, searchMarketSkills,
   billedInputTokens, cacheHitPercent, contextOccupancy, formatTokens, moduleShortName,
@@ -115,6 +116,9 @@ const useSessions = (selector) => useSyncExternalStore(
   () => selector(sessionState),
 )
 
+/** Whether the stubbed settings panel is showing (see the seat stub below). */
+let settingsPanelOpen = false
+
 /** What the harness's fake seats recorded, so the protocol can be asserted. */
 const seatCalls = []
 const renderSlot = (key, share, opts = {}) => {
@@ -123,7 +127,21 @@ const renderSlot = (key, share, opts = {}) => {
     return opts.fallback ?? null
   }
   if (key === 'sidebar.settings') {
-    return h('button', { type: 'button', 'aria-haspopup': 'dialog', 'data-seat': 'settings' }, '设置')
+    // The shipped SettingsRoot renders the trigger AND (once opened) a
+    // full-viewport panel with role="dialog"; this stub reproduces exactly that
+    // pair, because the dock's dismissal rule is a property of the PAGE — it
+    // stands down while any dialog is up — and a stub without the dialog could
+    // not test it.
+    return h(Fragment, null,
+      h('button', {
+        type: 'button', 'aria-haspopup': 'dialog', 'aria-expanded': String(settingsPanelOpen),
+        'data-seat': 'settings',
+        onClick: () => { settingsPanelOpen = true; void render({}) },
+      }, '设置'),
+      settingsPanelOpen
+        ? createPortal(h('div', { role: 'dialog', 'aria-modal': 'true', 'aria-label': '设置', 'data-seat': 'settings-panel' },
+          h('button', { type: 'button', 'data-seat': 'settings-close', onClick: () => { settingsPanelOpen = false; void render({}) } }, '关闭')), document.body)
+        : null)
   }
   if (key === 'sidebar.account.menu') {
     return h('button', { type: 'button', 'data-seat': 'logout' }, '退出登录')
@@ -186,9 +204,21 @@ const installMarketSkill = () => {
 }
 
 const root = createRoot(document.getElementById('root'))
-const render = async (props) => {
+/**
+ * Render the dock, plus optional siblings beside it.
+ *
+ * The siblings exist because one surface is mounted rather than opened: the
+ * Plugins dialog lost its drawer row (see the drawer section) while staying
+ * shipped, so §4 mounts it NEXT TO the dock. Rendering it this way — rather than
+ * in place of the dock — is what keeps the dock mounted, and with it the drawer
+ * state every later assertion reads.
+ *
+ * @param props - dock prop overrides.
+ * @param siblings - extra elements rendered beside the dock.
+ */
+const render = async (props, siblings = null) => {
   await act(async () => {
-    root.render(h(AccountDock, {
+    root.render(h(Fragment, null, h(AccountDock, {
       wide: true,
       expandSidebar: () => {},
       renderSlot,
@@ -200,20 +230,41 @@ const render = async (props) => {
       projectPath: undefined,
       t,
       ...props,
-    }))
+    }), siblings))
   })
 }
 
 /**
- * Open the Plugins modal from its drawer row. The row OPENS and never toggles
- * (the mask covers it while the modal is up, so a second click is not a gesture a
- * reader can perform), which means the harness has to close the modal itself
- * before re-opening it — and that is exactly the remount the fetch rides on.
+ * Open the Plugins modal. The drawer no longer offers a row for it (see the
+ * drawer section), so the dialog is mounted directly — the surface is kept
+ * shipped, and mounting it here is what keeps it verified. A re-open IS a
+ * remount: the read below runs again, which is what its assertions expect.
+ * @returns {Promise<void>} resolves once React has settled.
+ */
+/** Whether the mounted Plugins dialog is open. Module state because the dialog is
+ * driven directly here — its drawer row is gone — and Escape must still be able
+ * to close it, exactly as the real onClose would. */
+let pluginsDialogOpen = false
+const pluginsDialog = () => h(PluginsDialog, {
+  open: pluginsDialogOpen,
+  onClose: () => { pluginsDialogOpen = false; void render({}, pluginsDialog()) },
+  listPlugins,
+  t,
+})
+
+/**
+ * Open the Plugins modal: shut, then open.
+ *
+ * The dialog reads the inventory on the OPEN transition, so mounting it
+ * already-open would render a surface that never asked — this is the same
+ * gesture the old drawer row performed (close, then click again).
  * @returns {Promise<void>} resolves once React has settled.
  */
 const openPlugins = async () => {
-  if ($$('[data-stub="Modal"]').length > 0) await press('Escape')
-  await clickDrawerRow('插件')
+  pluginsDialogOpen = false
+  await render({}, pluginsDialog())
+  pluginsDialogOpen = true
+  await render({}, pluginsDialog())
   await settle()
 }
 
@@ -323,8 +374,9 @@ eq('the row reports itself expanded', $('[data-wui="accountRow"]').getAttribute(
 eq('the chevron flips', $('[data-wui="accountChevron"]').getAttribute('data-open'), 'true')
 eq('the seat share is unchanged by the drawer (the row owns that state)',
   JSON.stringify(seatCalls.find(c => c.key === 'sidebar.account')?.share), JSON.stringify({ wide: true }))
-eq('the drawer holds its six rows in order', JSON.stringify($$('[data-wui="accountDrawer"] button').map(b => b.textContent.trim())),
-  JSON.stringify(['使用情况', '插件', '技能', '产品卡', '设置', '退出登录']))
+// Five rows, not six: 插件 is not offered (see the drawer section below).
+eq('the drawer holds its five rows in order', JSON.stringify($$('[data-wui="accountDrawer"] button').map(b => b.textContent.trim())),
+  JSON.stringify(['使用情况', '技能', '产品卡', '设置', '退出登录']))
 eq('the rows come from the three expected seats',
   JSON.stringify([...new Set(seatCalls.map(c => c.key))].sort()),
   JSON.stringify(['sidebar.account', 'sidebar.account.menu', 'sidebar.settings']))
@@ -359,6 +411,13 @@ eq('clicking 产品卡 opens nothing', $$('[data-stub="Modal"]').length, 0)
 eq('with no body revealed', $$('[data-wui="drawerBody"]').length, 0)
 eq('and the drawer still open', $('[data-wui="accountDrawer"]').getAttribute('data-open'), 'true')
 eq('and nothing is read from the host before a disclosure is opened', inventoryCalls, 0)
+
+// 插件 is NOT offered in this drawer any more, at the operator's request. The
+// modal itself is kept whole and is verified in §4 by mounting it directly; what
+// this asserts is the deployment's decision — the row that opened it is gone, so
+// a reader who wants the loaded-plugin list uses Settings → Plugins.
+eq('the drawer offers no 插件 row',
+  $$('[data-wui="drawerRow"]').filter(node => node.textContent.trim() === zh['plugin.title']).length, 0)
 
 // 技能 is a REAL trigger now: it opens this plugin's own modal, and it is
 // addressed by its label like every other row.
@@ -810,12 +869,10 @@ inventoryAnswer = () => Promise.resolve({
   ],
 })
 await openPlugins()
-eq('the row opens a modal, not an inline block', $$('[data-stub="Modal"]').length, 1)
+eq('the kept surface is still a modal, not an inline block', $$('[data-stub="Modal"]').length, 1)
 eq('the modal is titled like the settings page', text('[data-stub="ModalTitle"]'), zh['plugin.title'])
 eq('and it explains what it is showing', text('[data-stub="ModalDescription"]'), zh['plugin.intro'])
 eq('the drawer stays open behind the modal', $('[data-wui="accountDrawer"]').getAttribute('data-open'), 'true')
-eq('the row marks itself as the dialog trigger',
-  $('[data-wui="drawerRow"][aria-haspopup="dialog"]') !== null, true)
 eq('opening the modal reads the host once', inventoryCalls, 1)
 
 // The catalogue reproduces the page: a search row, the "插件列表" heading with its
@@ -916,19 +973,14 @@ eq('opens so far', inventoryCalls, 4)
 await openPlugins()
 eq('re-opening reads the host again', inventoryCalls, 5)
 
-// Escape belongs to the modal while it is up: it must close the MODAL and leave
-// the drawer where the reader opened it from.
+// Escape closes the kept modal itself. The drawer-stands-down half of this
+// contract — Escape and outside pointerdowns belonging to the modal while it is
+// up — is asserted in §3 through the 技能 modal, which still has a row: the dock
+// stands down for a modal it knows about, and it can no longer know about this one.
 await press('Escape')
 eq('Escape closes the modal', $$('[data-stub="Modal"]').length, 0)
-eq('and leaves the drawer open behind it', $('[data-wui="accountDrawer"]').getAttribute('data-open'), 'true')
 
-// A pointerdown in the page (i.e. outside the drawer root) is swallowed for as
-// long as the modal is up — which is what keeps a portaled modal's own clicks
-// from being read as "clicked away from the drawer".
 await openPlugins()
-await outsidePointerDown()
-eq('a pointerdown outside does not close the drawer while the modal is up',
-  $('[data-wui="accountDrawer"]').getAttribute('data-open'), 'true')
 await press('Escape')
 eq('the modal closes again', $$('[data-stub="Modal"]').length, 0)
 
@@ -938,6 +990,21 @@ eq('Escape closes the drawer', $('[data-wui="accountDrawer"]').getAttribute('dat
 
 await click('[data-wui="accountRow"]')
 eq('it reopens', $('[data-wui="accountDrawer"]').getAttribute('data-open'), 'true')
+
+// The SHIPPED settings panel is a full-viewport layer too, and it PORTALS to the
+// page body (see dsh-client-ui-settings-general) — so every click in it is
+// "outside" this drawer's root. What keeps the drawer in place is the rule that
+// reads the PAGE for a live dialog rather than a list of this plugin's own flags.
+await click('[data-seat="settings"]')
+eq('the settings row opens the shipped panel', $$('[data-seat="settings-panel"]').length, 1)
+await outsidePointerDown()
+eq('a pointerdown while that panel is up does not close the drawer',
+  $('[data-wui="accountDrawer"]').getAttribute('data-open'), 'true')
+eq('the panel is still up after that pointerdown', $$('[data-seat="settings-panel"]').length, 1)
+if ($('[data-seat="settings-close"]') !== null) await click('[data-seat="settings-close"]')
+eq('and closing the panel still leaves the drawer open',
+  $('[data-wui="accountDrawer"]').getAttribute('data-open'), 'true')
+
 await outsidePointerDown()
 eq('a pointerdown outside closes it', $('[data-wui="accountDrawer"]').getAttribute('data-open'), null)
 await click('[data-wui="accountRow"]')

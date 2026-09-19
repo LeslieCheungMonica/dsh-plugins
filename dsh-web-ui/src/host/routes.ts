@@ -56,9 +56,10 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import {
-  createLarkCli, DRIVE_TOKEN_PATTERN, feishuUrl, folderNameFromPath, SCOPE_PATTERN,
+  BIN_NAME, createLarkCli, DRIVE_TOKEN_PATTERN, feishuUrl, folderNameFromPath, SCOPE_PATTERN,
   type LarkFolder, type LarkOutcome,
 } from './lark.ts'
+import { judgeIdentity, readFeishuSession, type IdentityVerdict } from './feishu-session.ts'
 import { createFolderResolver } from './folder.ts'
 import { asBackground, createProjectStore } from './projects.ts'
 import { readProductCards } from './products.ts'
@@ -292,13 +293,38 @@ function query(req: IncomingMessage): URLSearchParams {
 }
 
 /**
+ * Where the login plugin's session route lives when the row does not say.
+ *
+ * The two plugins are configured separately, so the value is a shared
+ * convention rather than a shared import; the default is the login plugin's own.
+ */
+const DEFAULT_FEISHU_PREFIX = '/feishu-auth'
+
+/** Deadline for the loopback identity hop: one request to a process already up. */
+const IDENTITY_HOP_TIMEOUT_MS = 2_000
+
+/** What this module needs to know about the deployment it is running in. */
+export interface LarkRouteOptions {
+  /**
+   * The login plugin's route prefix, e.g. `/feishu-auth`.
+   *
+   * Only the identity rule reads it, and only to ask the login plugin who the
+   * caller is (see `./feishu-session.ts`). Omitted, the login plugin's own
+   * default is assumed.
+   */
+  readonly feishuPrefix?: string | undefined
+}
+
+/**
  * Register the panel's routes.
  *
  * Every registration goes through `ctx.effect`, so unloading this plugin (or a
  * failed fiber) removes the routes with it.
  * @param ctx - a context where `webServer` is available.
+ * @param options - the deployment facts the identity rule needs.
  */
-export function registerLarkRoutes(ctx: Context): void {
+export function registerLarkRoutes(ctx: Context, options: LarkRouteOptions = {}): void {
+  const feishuPrefix = options.feishuPrefix ?? DEFAULT_FEISHU_PREFIX
   const log = ctx.logger('web-ui')
   const projects = createProjectStore()
   const cli = createLarkCli({
@@ -348,6 +374,79 @@ export function registerLarkRoutes(ctx: Context): void {
   }
 
   /**
+   * Why a read was refused, in one operator-facing sentence.
+   * @param verdict - the refusal.
+   * @returns the message the panel renders.
+   */
+  const refusalMessage = (verdict: IdentityVerdict & { kind: 'refuse' }): string => {
+    const docs = verdict.docsOpenId === '' ? `the account ${BIN_NAME} is bound to` : verdict.docsOpenId
+    if (verdict.reason === 'anonymous') {
+      return `no Feishu session is signed in on this browser, and the docs panel reads the drive of ${docs}`
+    }
+    const viewer = verdict.viewer
+    const who = viewer === undefined || viewer.name === '' ? (viewer?.openId ?? 'somebody else') : viewer.name
+    return `this browser is signed in as ${who}, but the docs panel reads the drive of ${docs}`
+  }
+
+  /**
+   * Refuse a read whose browser is not the account the CLI is bound to.
+   *
+   * Applied to every route that reads the CLI's Drive, and to nothing else. The
+   * whole rule is one question — "is the person asking the person whose drive
+   * this is?" — asked of the login plugin over loopback; see
+   * `./feishu-session.ts` for why the answer is allowed to be "I cannot tell".
+   *
+   * A refusal is CONTENT, not a transport failure: it is answered `200` with a
+   * coded error, exactly like the adapter's own failures, because the panel
+   * renders it in place rather than falling back to an empty list.
+   * @param label - the route's name, for the log line.
+   * @param handler - the route body, run only when the identity may read.
+   * @returns the wrapped handler.
+   */
+  const withIdentity = (
+    label: string,
+    handler: (req: IncomingMessage, res: ServerResponse) => Promise<void>,
+  ) => async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    const verdict = await identityVerdict(req)
+    if (verdict.kind === 'refuse') {
+      log.info(`lark ${label} refused for ${verdict.reason}: ${refusalMessage(verdict)}`)
+      sendJson(res, 200, { ok: false, error: { code: 'identity-mismatch', message: refusalMessage(verdict) } })
+      return
+    }
+    if (verdict.reason === 'foreign-app') {
+      log.warn(`lark ${label}: the login plugin and ${BIN_NAME} name different applications, so their open_ids cannot be compared; allowing the read`)
+    }
+    await handler(req, res)
+  }
+
+  /**
+   * Ask the login plugin who this browser is, and compare it with the CLI.
+   * @param req - the request, whose `Cookie` header carries the session.
+   * @returns the verdict; never throws, and fails OPEN when it cannot tell.
+   */
+  const identityVerdict = async (req: IncomingMessage): Promise<IdentityVerdict> => {
+    const [reading, identity] = await Promise.all([
+      readFeishuSession({
+        port: ctx.webServer.port,
+        feishuPrefix,
+        timeoutMs: IDENTITY_HOP_TIMEOUT_MS,
+        cookie: req.headers.cookie,
+      }),
+      // Failing to read the CLI's own account is the READ's business, not this
+      // rule's: the route is about to make the same call and can report the real
+      // reason (`cli-missing`, `not-logged-in`) instead of a comparison that
+      // could not be made.
+      cli.identity(),
+    ])
+    if (!identity.ok) return { kind: 'allow', reason: 'no-gate' }
+    return judgeIdentity({
+      reading,
+      docsOpenId: identity.value.openId,
+      docsAppId: identity.value.appId,
+    })
+  }
+
+  /**
    * Register one route for this plugin's fiber lifetime.
    * @param path - the exact pathname.
    * @param handler - the route body.
@@ -367,9 +466,36 @@ export function registerLarkRoutes(ctx: Context): void {
   route(STATE_PATH, async (req, res) => {
     if (req.method !== 'GET') { sendMethodNotAllowed(res, 'GET'); return }
     if (query(req).has('refresh')) cli.invalidate()
-    sendOutcome(res, await cli.state(), value => ({
+    const [state, identity, reading] = await Promise.all([
+      cli.state(),
+      cli.identity(),
+      readFeishuSession({
+        port: ctx.webServer.port,
+        feishuPrefix,
+        timeoutMs: IDENTITY_HOP_TIMEOUT_MS,
+        cookie: req.headers.cookie,
+      }),
+    ])
+    // The panel needs BOTH sides to explain a mismatch — "something is wrong"
+    // is not an instruction — so the viewer rides along even when it agrees.
+    const viewer = reading.kind === 'signed-in'
+      ? { name: reading.session.name, openId: reading.session.openId, email: reading.session.email }
+      : null
+    // With no comparable CLI identity there is nothing to compare, and inventing
+    // a mismatch would lock a deployment that has no login plugin out of its own
+    // panel. `state`'s own failure (nobody signed in to the CLI) is reported by
+    // `sendOutcome` below, which ignores the wrapper.
+    const mismatch = state.ok && identity.ok
+      && judgeIdentity({
+        reading,
+        docsOpenId: identity.value.openId,
+        docsAppId: identity.value.appId,
+      }).kind === 'refuse'
+    sendOutcome(res, state, value => ({
       loggedIn: value.loggedIn,
       user: value.user ?? null,
+      viewer,
+      mismatch,
     }))
   }, 'state')
 
@@ -494,7 +620,7 @@ export function registerLarkRoutes(ctx: Context): void {
     }
   }
 
-  route(FOLDER_PATH, async (req, res) => {
+  route(FOLDER_PATH, withIdentity('folder', async (req, res) => {
     if (req.method === 'GET') {
       const params = query(req)
       const path = (params.get('path') ?? '').trim()
@@ -601,9 +727,9 @@ export function registerLarkRoutes(ctx: Context): void {
       folderToken: created.value.folderToken,
       url: created.value.url,
     })
-  }, 'folder')
+  }), 'folder')
 
-  route(ATTACH_PATH, async (req, res) => {
+  route(ATTACH_PATH, withIdentity('folder/attach', async (req, res) => {
     if (req.method !== 'POST') { sendMethodNotAllowed(res, 'POST'); return }
     const body = await readJsonBody(req)
     if (!body.ok) {
@@ -665,9 +791,9 @@ export function registerLarkRoutes(ctx: Context): void {
       folderToken,
       url: stored.larkFolderUrl,
     })
-  }, 'folder/attach')
+  }), 'folder/attach')
 
-  route(FILES_PATH, async (req, res) => {
+  route(FILES_PATH, withIdentity('files', async (req, res) => {
     if (req.method !== 'GET') { sendMethodNotAllowed(res, 'GET'); return }
     const params = query(req)
     const folder = (params.get('folder') ?? '').trim()
@@ -691,7 +817,7 @@ export function registerLarkRoutes(ctx: Context): void {
       folderToken: folder,
       pageToken: pageToken === null || pageToken === '' ? undefined : pageToken,
     }), value => ({ nodes: value.nodes, hasMore: value.hasMore, pageToken: value.pageToken ?? null }))
-  }, 'files')
+  }), 'files')
 
 
   route(PROJECT_PATH, async (req, res) => {

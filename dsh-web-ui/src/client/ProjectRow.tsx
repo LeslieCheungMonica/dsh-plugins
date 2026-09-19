@@ -125,7 +125,12 @@ export function ProjectRow({ workspaces, currentId, rail, busy, onSelect, onNewP
   currentId: WorkspaceId | undefined
   rail: boolean
   busy: boolean
-  /** Scope the column to a project. Selecting does NOT start a session. */
+  /**
+   * The reader chose a project. Scoping the column is this row's job; whether
+   * that also opens the project's session is the CALLER's rule (a pick that
+   * changes the project opens it, a pick of the current one does not — see
+   * `projectPick.ts`), because only the caller knows which project is scoped.
+   */
   onSelect: (workspaceId: WorkspaceId) => void
   onNewProject: () => void
   /**

@@ -412,18 +412,38 @@ async function handleSession(req: IncomingMessage, res: ServerResponse, runtime:
   const { config } = runtime
   const secret = await runtime.secret()
   if (secret === undefined) {
-    sendJson(res, 200, { configured: false, authenticated: false, loginUrl: config.loginPath })
+    sendJson(res, 200, {
+      configured: false,
+      authenticated: false,
+      loginUrl: config.loginPath,
+      appId: config.appId,
+    })
     return
   }
   const session = sessionFromRequest(config, secret, req.headers.cookie)
   if (session === undefined) {
-    sendJson(res, 200, { configured: true, authenticated: false, loginUrl: config.loginPath })
+    sendJson(res, 200, {
+      configured: true,
+      authenticated: false,
+      loginUrl: config.loginPath,
+      appId: config.appId,
+    })
     return
   }
   sendJson(res, 200, {
     configured: true,
     authenticated: true,
     loginUrl: config.loginPath,
+    // The application this identity was issued by.
+    //
+    // A Feishu `open_id` is scoped to the application that issued it, so a
+    // consumer comparing this session's `openId` against an identity from
+    // somewhere else — the docs panel comparing it against `lark-cli`, to name
+    // the one that exists today — can only do that meaningfully when both sides
+    // name the SAME application. Without this field the comparison silently
+    // reports a mismatch for the same person the moment the two sides are
+    // pointed at different applications, which locks every session out.
+    appId: config.appId,
     user: {
       name: session.name ?? session.openId,
       openId: session.openId,

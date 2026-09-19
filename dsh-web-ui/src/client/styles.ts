@@ -4632,6 +4632,138 @@ html body:has([data-dsh-toggle-cluster]) {
   word-break: break-word;
 }
 
+/* The input-anchor rail (see InputRail.tsx): the conversation column's left
+   edge, one tick per input the reader typed, and a tip that names the tick under
+   the pointer.
+
+   Three properties of this layer are load-bearing, and each is the kind of thing
+   a later "cleanup" would remove:
+
+   1. The rail OVERLAYS the transcript rather than making room in it. It is a
+      child of the frame's click-through overlay, so it claims exactly the strip
+      it draws in — \`pointer-events\` is therefore set per element (the strip's
+      empty area and the panel's gap stay transparent), and the strip is 14px
+      wide. A rail that swallowed clicks across its whole height would make the
+      left edge of every message unselectable.
+   2. The expansion grows to the RIGHT and floats OVER the messages. Reflowing the
+      column on hover would move the very text the reader is pointing at, and the
+      transcript is another plugin's box besides.
+   3. The geometry the component measures against is inline (top/left/height), so
+      this layer must not set any of them. */
+
+[data-wui='inputRail'] {
+  position: fixed;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  pointer-events: none;
+}
+
+/* The strip the reader points at: the only piece of the rail with a hit area,
+   and the ticks inside it are the only things that do anything. It spans the
+   rail's whole height — the older-history chevron is out of flow — because the
+   component centres the stack against that height. */
+[data-wui='railTrack'] {
+  position: relative;
+  flex: 1;
+  width: 14px;
+  pointer-events: none;
+}
+
+[data-wui='railTick'] {
+  position: absolute;
+  left: 0;
+  width: 14px;
+  height: 6px;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: var(--dsw-alias-label-dimmed, var(--dsw-alias-label-tertiary));
+  opacity: 0.55;
+  cursor: pointer;
+  pointer-events: auto;
+  transition: opacity 120ms var(--ds-ease-in-out), background 120ms var(--ds-ease-in-out);
+}
+
+/* A mid-turn input reads narrower than the turn-opening one, so a glance at the
+   rail separates "I said this" from "I interrupted with this". */
+[data-wui='railTick'][data-kind='steering'] {
+  height: 4px;
+  opacity: 0.4;
+}
+
+[data-wui='inputRail']:hover [data-wui='railTick'],
+[data-wui='railTick']:focus-visible {
+  opacity: 0.9;
+}
+
+[data-wui='railTick'][data-active='true'] {
+  background: var(--dsh-web-ui-accent);
+  opacity: 1;
+}
+
+/* The window's own edge: while older history remains, this is the rail's way
+   backwards (see InputRail.tsx). It sits at the rail's top because that is where
+   the history it loads will appear — and it is ABSOLUTE rather than in flow, so
+   the track below it keeps the rail's full height. The stack's centring is
+   computed against the rail's height in the component, so a chevron that took a
+   row out of the track would push every tick down by that row's height. */
+[data-wui='railOlder'] {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+[data-wui='railOlder']:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+
+[data-wui='railOlder']:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* The tip: the words of the ONE tick the pointer is on, hanging beside it.
+   \`left\` / \`top\` / \`transform\` are written inline by the component — they are the
+   anchoring arithmetic — so this layer owns only how it looks. It is
+   click-through on purpose: a tip that took the pointer would end the hover that
+   produced it, and the rail is a row of targets, not a menu. */
+[data-wui='railTip'] {
+  position: absolute;
+  z-index: 1;
+  max-width: 300px;
+  padding: 5px 9px;
+  overflow: hidden;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 7px;
+  background: var(--dsw-alias-bg-layer-2);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.16);
+  color: var(--dsw-alias-label-primary);
+  font-size: 12px;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-wui='railTick'] { transition: none; }
+}
 
 `
 

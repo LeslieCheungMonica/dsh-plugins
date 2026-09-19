@@ -123,6 +123,16 @@ export type LarkFailure =
   | 'scope-missing'
   /** The caller may not do this to that resource: a folder they cannot read. */
   | 'forbidden'
+  /**
+   * The browser's own Feishu session names a different person than the account
+   * `lark-cli` is bound to on this host.
+   *
+   * Distinct from every other failure here because its fix is not a retry:
+   * retrying reads the same other person's Drive again. Either the reader signs
+   * the CLI in as themselves, or they are looking at a deployment whose archive
+   * belongs to somebody else.
+   */
+  | 'identity-mismatch'
 
 /** The adapter's result type: a value, or a typed reason there is none. */
 export type LarkOutcome<T> =
@@ -153,7 +163,7 @@ export interface LarkLogger {
 const BIN_ENV = 'DSH_WEB_UI_LARK_CLI'
 
 /** Binary name on POSIX hosts (this plugin's deployment). */
-const BIN_NAME = 'lark-cli'
+export const BIN_NAME = 'lark-cli'
 
 /** Deadline for a data call: a cold token refresh plus one list request. */
 const CALL_TIMEOUT_MS = 20_000
@@ -430,6 +440,14 @@ interface Envelope {
     readonly user?: Record<string, unknown>
     readonly bot?: Record<string, unknown>
   }
+  /**
+   * The application this CLI is bound to, as `auth status --json` reports it.
+   *
+   * Read for one purpose: a Feishu `open_id` is scoped to the application that
+   * issued it, so the panel may only compare the CLI's user against a browser
+   * session when both name the same application (see `host/feishu-session.ts`).
+   */
+  readonly appId?: unknown
 }
 
 /** What one child process produced. */
@@ -507,10 +525,31 @@ export interface LarkLoginStart {
   readonly startedAt: number
 }
 
+/** Which account the CLI is bound to, and by which application. */
+export interface CliIdentity {
+  /**
+   * The CLI's own application id, `''` when it does not report one.
+   *
+   * A Feishu `open_id` is scoped to the application that issued it, so this is
+   * what makes the CLI's user comparable with a browser session at all.
+   */
+  readonly appId: string
+  /** The signed-in user's `open_id`, `''` when nobody is signed in. */
+  readonly openId: string
+}
+
 /** The adapter the routes use. */
 export interface LarkCli {
   /** Read the signed-in user. */
   state: () => Promise<LarkOutcome<LarkState>>
+  /**
+   * Read which account the CLI is bound to, locally and cheaply.
+   *
+   * Deliberately NOT `state()`: the identity rule asks this on every gated read,
+   * while `state()` additionally makes a network call for the profile that the
+   * comparison has no use for.
+   */
+  identity: () => Promise<LarkOutcome<CliIdentity>>
   /**
    * List one page of one folder's children.
    *
@@ -784,6 +823,11 @@ export function createLarkCli(options: { log: LarkLogger }): LarkCli {
   let bin: Cached<string | undefined> | undefined
   let queue: Promise<unknown> = Promise.resolve()
   const stateCache = new Map<string, Cached<LarkState>>()
+  /**
+   * The CLI's bound account, cached like `state` and for the same reason: only a
+   * login changes it, and the identity rule asks on every gated read.
+   */
+  const identityCache = new Map<string, Cached<CliIdentity>>()
   const filesCache = new Map<string, Cached<LarkLevel>>()
   const childrenCache = new Map<string, Cached<readonly LarkEntry[]>>()
   /** The one device-flow login in flight (or the last one to finish). */
@@ -914,6 +958,7 @@ export function createLarkCli(options: { log: LarkLogger }): LarkCli {
    * @returns the raw parsed status, or a typed failure.
    */
   const authStatus = async (): Promise<LarkOutcome<{
+    appId: string
     user: { status: string; openId: string; userName: string } | undefined
   }>> => {
     const result = await call(['auth', 'status', '--json'], {
@@ -924,11 +969,16 @@ export function createLarkCli(options: { log: LarkLogger }): LarkCli {
       requireEnvelope: false,
     })
     if (!result.ok) return result
+    // The application the CLI is bound to. `''` when an older CLI omits it,
+    // which the identity rule reads as "not comparable" rather than as a
+    // mismatch (see `host/feishu-session.ts`).
+    const appId = typeof result.value.appId === 'string' ? result.value.appId : ''
     const raw = result.value.identities?.user
-    if (raw === undefined) return { ok: true, value: { user: undefined } }
+    if (raw === undefined) return { ok: true, value: { appId, user: undefined } }
     return {
       ok: true,
       value: {
+        appId,
         user: {
           status: str(raw, 'status'),
           openId: str(raw, 'openId'),
@@ -985,6 +1035,31 @@ export function createLarkCli(options: { log: LarkLogger }): LarkCli {
 
     const value: LarkState = { loggedIn: true, user }
     stateCache.set('state', { at: Date.now(), value })
+    return { ok: true, value }
+  }
+
+  /**
+   * Which account the CLI is bound to, read locally.
+   *
+   * `auth status` answers without a network call, which is what makes this cheap
+   * enough to ask on every identity-gated read. A missing or expired identity is
+   * reported as an empty `openId` rather than as a failure: this method answers
+   * "which account", and "none" is an answer — the read that follows says
+   * `not-logged-in` for itself, which is a truer message than this one could give.
+   * @returns the CLI's application and its user's `open_id`.
+   */
+  const identity: LarkCli['identity'] = async () => {
+    const cached = identityCache.get('identity')
+    if (cached !== undefined && Date.now() - cached.at < STATE_TTL_MS) return { ok: true, value: cached.value }
+    const status = await authStatus()
+    if (!status.ok) return status
+    const user = status.value.user
+    const signedIn = user !== undefined && user.status !== 'missing' && user.status !== 'expired'
+    const value: CliIdentity = {
+      appId: status.value.appId,
+      openId: signedIn ? user.openId : '',
+    }
+    identityCache.set('identity', { at: Date.now(), value })
     return { ok: true, value }
   }
 
@@ -1083,6 +1158,7 @@ export function createLarkCli(options: { log: LarkLogger }): LarkCli {
   /** Forget every cached read (the panel's Refresh gesture). */
   const invalidate = (): void => {
     stateCache.clear()
+    identityCache.clear()
     filesCache.clear()
     childrenCache.clear()
   }
@@ -1350,5 +1426,5 @@ export function createLarkCli(options: { log: LarkLogger }): LarkCli {
     }
   }
 
-  return { state, files, children, createFolder, startLogin, loginStatus, loginQr, cancelLogin, invalidate }
+  return { state, identity, files, children, createFolder, startLogin, loginStatus, loginQr, cancelLogin, invalidate }
 }

@@ -75,7 +75,12 @@ export function apply(ctx: Context, config?: unknown): void {
   const skills = readSkillOptions(row?.skills)
 
   ctx.inject(['webServer'], (httpCtx) => {
-    registerLarkRoutes(httpCtx)
+    // One value for "where the login gate lives", passed to both halves that ask
+    // it: the skill marketplace derives a per-reader token from the address that
+    // session names, and the docs panel compares that session against the
+    // account `lark-cli` is bound to. Reading `config.skills` from the docs panel
+    // instead would make one plugin's panel depend on another feature's row.
+    registerLarkRoutes(httpCtx, { feishuPrefix: skills.feishuPrefix })
     registerGitRoutes(httpCtx)
     // The file page a transcript's file link opens in the GUI (see
     // host/file-routes.ts and the client's `fileViewer` capability).

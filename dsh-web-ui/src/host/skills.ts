@@ -73,6 +73,7 @@ import type {
   InstalledSkillSnapshot, InstalledSkillSource, SkillError, SkillFailure, SkillInstallRequest,
   SkillInstallResult, SkillMarketItem, SkillMarketSnapshot, SkillResponse,
 } from '../shared/skillswire.ts'
+import { readFeishuSession } from './feishu-session.ts'
 import { parseSkillFacts, readSkillFacts, skillDirectoryName } from './skillmd.ts'
 import { extractZipInto, readZip } from './zip.ts'
 
@@ -117,14 +118,6 @@ function resolveHome(env: string, fallback: string): string {
   const configured = process.env[env]
   if (configured !== undefined && configured.trim() !== '') return resolve(configured.trim())
   return join(homedir(), fallback)
-}
-
-/** The answer this module needs from the login plugin's session route. */
-interface SessionAnswer {
-  /** Whether the cookie identifies a live session. */
-  readonly authenticated?: unknown
-  /** The signed-in user, when there is one. */
-  readonly user?: { readonly email?: unknown } | undefined
 }
 
 /** What this module is configured with. */
@@ -416,28 +409,30 @@ async function verifySession(
   if (cookie === undefined || cookie === '') {
     return { ok: false, error: { code: 'no-session', message: 'this browser carries no Feishu session' } }
   }
-  const url = `http://127.0.0.1:${String(ctx.webServer.port)}${options.feishuPrefix}/session`
-  const answer = await hop(url, { method: 'GET', headers: { cookie } }, options.timeoutMs)
-  if (answer.kind === 'unreachable') {
-    return fail('no-session', `could not read the login session: ${answer.message}`)
-  }
-  if (answer.kind === 'unreadable') {
-    return fail('no-session', `the login session route ${answer.message}`)
-  }
-  if (answer.status !== 200) {
-    return fail('no-session', `the login session route answered ${String(answer.status)}`)
-  }
-  const session = answer.body as SessionAnswer | null
-  if (typeof session !== 'object' || session === null || session.authenticated !== true) {
+  // The hop itself lives in `./feishu-session.ts`, shared with the docs panel's
+  // identity rule: two copies of a security-relevant read would eventually
+  // disagree about what counts as "no session".
+  const reading = await readFeishuSession({
+    port: ctx.webServer.port,
+    feishuPrefix: options.feishuPrefix,
+    timeoutMs: options.timeoutMs,
+    cookie,
+  })
+  // Every way of not having a session is one code, because the modal renders
+  // them the same: an absent gate, an expired cookie and a gate that is
+  // unreachable all leave the reader with the same next step. The differences
+  // ride in the message.
+  if (reading.kind === 'no-gate') return fail('no-session', reading.message)
+  if (reading.kind === 'anonymous') {
     return fail('no-session', 'no Feishu session is signed in on this browser')
   }
-  const email = session.user?.email
-  if (typeof email !== 'string' || email.trim() === '') {
+  const email = reading.session.email.trim()
+  if (email === '') {
     // A real state rather than a bug: the Feishu login only returns an address
     // when its own configuration granted the email scope.
     return fail('no-email', 'the Feishu login carries no email address, so no SkillHub token can be derived')
   }
-  return { ok: true, email: email.trim() }
+  return { ok: true, email }
 }
 
 /**

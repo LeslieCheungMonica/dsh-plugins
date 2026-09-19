@@ -32,10 +32,13 @@ the shell:
   right-hand drawer for the current session's project: branches, changes, commit
   history, and a journal of every git command the drawer ran (see
   [The git drawer](#the-git-drawer));
+- the **conversation column's left edge carries an input-anchor rail**: one tick
+  per message you typed — click one to jump to it, hover a tick to be told which
+  input it is (in a tip beside it), and follow the marker that says which input is
+  on screen (see [The input-anchor rail](#the-input-anchor-rail));
 - the **bottom-left corner is the account dock**: the signed-in identity sits
   above the column's foot, and clicking it opens an upward drawer holding
-  **使用情况** (the current session's token usage), **插件** (a modal listing what
-  was loaded, presented like Settings → Plugins), **技能** (a modal with the
+  **使用情况** (the current session's token usage), **技能** (a modal with the
   installed skills, split by public/personal, and the marketplace below them),
   **设置**, and **退出登录** (see
   [The account dock](#the-account-dock)). The shipped account capsule used to be a
@@ -49,9 +52,15 @@ the shell:
 The column is scoped to ONE project, and that scope is a single fact both the
 header and the list read (`src/client/project.ts`):
 
-- **the dropdown writes it** — picking a project scopes the list. It does NOT
-  mint a session (the shipped browser's picker does, which is why the shipped
-  flow leaks empty sessions); open a session, or press New Session, to work.
+- **the dropdown writes it** — picking a project scopes the list, and a pick that
+  CHANGES the project also opens that project's session (DSH's `startSession`:
+  its blank session, reused when it already has one), so the conversation beside
+  the list is the one the list is about. A pick of the project already scoped to
+  only re-scopes: leaving a conversation for a blank one on a mis-click is the
+  failure that rule prevents. The decision is `src/client/projectPick.ts`, and it
+  deliberately does NOT live in the selection writer, which the
+  follow-the-current-session rule below calls too — a mint there would start a
+  SECOND session every time a session opened elsewhere.
 - **it follows the current session** — open a session in another project and the
   scope moves there, so the list always contains the session you are looking at.
 - **a manual pick holds** until the session moves again, and the value is
@@ -594,6 +603,72 @@ is `repos`, for the reason given above.
   so in the menu rather than pretending the list is complete.
 - The journal is in memory: restarting `dsh web` clears it.
 
+## The input-anchor rail
+
+The conversation column's **left edge carries a rail of ticks, one per input you
+typed** — click one to jump to it, hover a tick to be told which input it is (see
+`src/client/InputRail.tsx`, and `src/client/rail.ts` for the arithmetic).
+
+- **What gets a tick**: the rows ui-conversation marks as yours — `user` (the
+  message that opened a turn) and `steering` (one admitted into a running turn).
+  Injected context is machinery, not something you said, so it never gets one. A
+  `steering` tick is drawn narrower, so a glance separates "I said this" from "I
+  interrupted with this".
+- **The anchors are GROUPED**: one uniform 10px gap, with the whole stack centred
+  in the rail. This replaced a mapping that placed each tick at the input's offset
+  in the loaded content, so that a long answer looked long — on a real
+  conversation that spread a handful of anchors across several hundred pixels and
+  read as unrelated marks rather than as the list of your own inputs. A loaded
+  window with too many anchors to fit shrinks the gap first (floor 3px); past that
+  floor the stack overflows symmetrically and stays centred, because a tick drawn
+  outside the rail is a tick nobody can click.
+- **Hovering a tick names THAT tick, beside it**: one tip (`第 3 条输入：…`, the
+  input's first line) hangs to the right of the tick under the pointer, centred on
+  it, and leaves with the pointer — one tip at a time, and hovering the empty part
+  of the strip shows nothing. This replaced a whole-list preview that opened at
+  the rail's TOP: on a long conversation that was nowhere near the pointer, which
+  is the position the reader is looking at. The tip is click-through, so it can
+  never end the hover that produced it.
+- **The current input is marked**: the last one whose top has passed the
+  scrollport's midline, so scrolling lights up what you are reading. A click pins
+  the input it jumped to until you scroll again, because a tick flanked by closely
+  spaced inputs would otherwise light up its neighbour.
+- **A click lands the input 12px below the scrollport's top edge**, written with
+  the same arithmetic `ChatView` uses to restore a reader position.
+- **Coverage is the loaded window**, and the rail says so by what it offers: while
+  `hasMore` is set, a **chevron at the rail's top** loads one more page through the
+  session's own `loadOlder` — the verb the shipped 加载更早 button calls. The rail
+  never silently pulls a long session's whole log. The consequence worth knowing:
+  on a long session, reaching your first input takes one click per page.
+- **One input is enough to draw the rail, and an empty loaded window keeps it.**
+  Two rules, both learned from a real conversation rather than reasoned out: a long
+  agent turn is one prompt under dozens of tool calls, so that single tick IS the
+  useful jump (back to the top of the turn); and a window whose tail has grown past
+  its own prompt — 38 assistant steps and 64 tool calls in the case measured — has
+  no anchor at all, yet must still show the rail, because the rail is where the
+  **更早** chevron lives and hiding it removes the only route back to earlier
+  inputs. The rail therefore disappears only with no session, no transcript, or
+  nothing typed AND no history left to load.
+
+Where it lives is a deliberate compromise. It registers into `shell.overlay` —
+the frame's root-scope, click-through, additive seat, the same one this plugin's
+action bar uses — and positions itself against the transcript's scrollport
+(`[data-conversation-scroll]`) and its per-row `data-chat-anchor-key` /
+`data-chat-flow-kind` attributes. Those are READ, never written, and they are the
+same hooks `ChatView` navigates its own paging by. The alternative was a new seat
+inside ui-conversation, which would mean patching DSH itself and re-applying that
+patch on every harness upgrade; taking over `conversation.view` was worse still,
+since that seat is the whole chat view. When those hooks are absent the rail
+renders nothing rather than something wrong.
+
+Because it is a root-scope occupant it cannot use the session kit
+(`shell.overlay`'s standard kit carries the session LIST hook, not `useSession`),
+so the paging facts arrive through this plugin's injected face — `hasMore`,
+`loadingOlder`, and `loadOlder`, nothing else. That face is memoized per session
+id, which is a correctness requirement rather than a cache: the component binds
+those closures to `useSyncExternalStore`, and a fresh object per render would
+resubscribe on every commit.
+
 ## The bottom command bar
 
 > **Currently OFF.** The bar has no terminal control, and the host registers none
@@ -776,7 +851,6 @@ The column's bottom-left corner holds the signed-in identity
 ```
 ┌──────────────────────────────┐
 │  📊  使用情况            ⌃   │   ← expands in place (see below)
-│  🧩  插件                    │   ← opens a modal (see below)
 │  ✨  技能                    │   ← opens a modal (see below)
 │  ▭   产品卡                  │   ← PLACEHOLDER: nothing happens yet
 │  ⚙   设置                    │   ← the SHIPPED settings trigger, and its modal
@@ -785,8 +859,23 @@ The column's bottom-left corner holds the signed-in identity
  [ 张] 张三                  ⌃      ← the row (this corner's only trigger)
 ```
 
-Four things about it are deliberate:
+Five things about it are deliberate:
 
+- **The shipped Settings panel must PORTAL to the page body, and does**
+  (`dsh-client-ui-settings-general` does it since this rule was found the hard
+  way). The panel is a full-viewport `position: fixed` layer; while it was
+  rendered inside this drawer, the macOS app's WKWebView never composited it to
+  the screen — the mask beside it painted, the panel did not, while its DOM,
+  geometry, hit-testing, and even the webview's own forced re-render were all
+  correct. Moving that subtree to `document.body` fixed it outright. The drawer's
+  dismissal rule below is written against the page for the same reason.
+- **The 插件 row is NOT offered, at the operator's request** (`OFFER_PLUGINS_ROW`
+  in `AccountDock.tsx`). The modal is hidden, not the surface: `PluginsDialog`,
+  the `listPlugins` face and the host's inventory read are all kept whole and
+  still type-checked, so restoring the row is that one value — the same
+  arrangement as the bottom command bar. The reason it costs nothing is that the
+  modal reproduces the **Settings → Plugins** page, which is still reachable: see
+  [插件 — the loaded plugin list](#插件--the-loaded-plugin-list-in-a-modal).
 - **The account is no longer in the frame's top-right corner.** It used to be a
   capsule in the session header's utilities row (and, with no session open, a
   fixed capsule pinned in that same corner) — a corner the frame fills with its
@@ -794,7 +883,7 @@ Four things about it are deliberate:
   gone from the other plugin entirely, not hidden with CSS.
 - **The drawer carries four ROWS with four different owners, and no two plugins
   learn about each other.** *使用情况* is this plugin's, expanded in place.
-  *插件* and *技能* are this plugin's too, and each opens a modal. *设置* is
+  *技能* is this plugin's too, and opens a modal. *设置* is
   `ui-settings`' shipped trigger, rendered **inside the drawer instead of the
   column's foot** — it owns its own modal state, so a row that *is* that trigger
   opens the settings panel by existing, and this plugin never needs to know how
@@ -980,7 +1069,11 @@ gutter, and a header naming the file, its path, size, line count and mtime.
 
 ### 插件 — the loaded plugin list, in a modal
 
-The Plugins row (`src/client/PluginsDialog.tsx`) opens a modal that reproduces
+> **No longer reachable from this drawer** — the 插件 row is hidden (see
+> [The account dock](#the-account-dock)). The surface below is kept shipped and
+> type-checked; Settings → Plugins is the way to it.
+
+`src/client/PluginsDialog.tsx` renders a modal that reproduces
 the **Settings → Plugins page**: the section heading and its intro, a search row,
 the 「插件列表」 heading with its count, and a **two-column card grid** whose cards
 carry the module's short name, the phase of the entry's **root Fiber** as a dot,
@@ -1596,6 +1689,7 @@ pnpm harness:stage-tag                                # the FDE flow node: host 
 pnpm harness:new-project-form                         # the New Project form, no GUI needed
 pnpm harness:lark-panel                               # the Feishu folder panel, no GUI needed
 pnpm harness:account-dock                             # the account dock + the usage figures, no GUI needed
+pnpm harness:input-rail                               # the conversation column's input-anchor rail, no GUI needed
 pnpm harness:skills-route                             # the marketplace's host half, against a fake SkillHub
 pnpm harness:skills-install                           # the install path: real archives, hostile archives, the scan
 CHROME=<chromium> node scripts/smoke.mjs              # structure, rail, plugin list
@@ -1672,11 +1766,13 @@ matters here because this deployment's GUI sits behind the QR login gate:
 | `pnpm harness:folder-route` | the hosts's folder routes: the methods, 400s for every malformed request (a path-shaped name, an argv-shaped token, a non-http URL — none of which reach the CLI), the folder named from the request's `name` (the project's name) with the path's segment as the fallback, **exactly one create and ZERO parent-folder reads** per create (the create-only rule, asserted rather than assumed), the deployment's parent token travelling to the CLI even when the request names another, a create RECORDING the folder and a recorded folder answered with no listing at all, all four resolution outcomes (`record`/`adopted`/`missing`/`ambiguous`) including that adoption is written once and ambiguity writes nothing, the listing's page and its folder token inside the command's `--params`, and a Feishu failure — including a missing scope — answered as 200/`ok:false` |
 | `pnpm harness:folder-flow` | the browser flow: the exact request it sends (path **and** project name), that the session opens **before** the folder call, that a success leaves the sidebar strip EMPTY and announces itself through the system banner (re-announced on a repeat run), that a failure goes to the strip and NOT to the banner, every failure sentence read from the real dictionary, and that no dedup copy is reachable any more |
 | `pnpm harness:new-project-form` | the form itself, driven by clicks in jsdom: what it asks for, that opening it touches nothing, the product-card row appearing for `已有产品` and for nothing else (fed by the host's catalogue, which this harness answers), the folder field falling back to the browser on a host with no native chooser, the draft surviving that round trip, what the submission sends — and EDIT mode end to end: the prefill from the record, the read-only directory, the save reaching both `workspace.rename` and the record |
+| `pnpm harness:project-pick` | picking a project in the dropdown, which is what decides whether the main conversation pane follows the list: the SCOPE write runs on every pick (a click is never inert), the session open runs only on a pick that MOVES the column (**a mis-click on the current project must not throw the reader out of the conversation they were reading**, and with no project scoped yet the first pick is a move like any other), both sinks carry the PICKED project rather than the previous one, and the scope is written BEFORE the session opens on every changing pick (the list switches on the click instead of waiting for a session to connect) |
 | `pnpm harness:file-route` | the file page, driven over a real socket against the real route module: that a text file renders with numbered lines and its header, that a file containing `</pre><script>` arrives as TEXT (the page's entire security surface, asserted against the raw bytes), that `escapeHtml` is that one rule, that a missing path / a directory / a binary / a file past the cap each answer with their own sentence, that the theme the GUI passed is the theme the page wears, that the decorative name segment in the URL changes nothing, and that the plugin's own `apply` registers the route under the webserver capability |
 | `pnpm harness:skills-route` | the marketplace's host half, driven over a REAL socket against a local server playing both the login plugin's session route and SkillHub, with every request it received recorded: the search TERM (omitted entirely when blank; trimmed; carried ALONGSIDE the two fixed parameters rather than replacing them, which is the assertion that a term cannot change what is searched; surviving `&`, `=`, `/`, `?`, `#`, `%` and non-ASCII intact; refused past 100 characters as a bad request without asking SkillHub anything; and read off the request's own query string at the route); the token convention (`li.yh9@asiainfo-sec.com` → `li.yh9-skillhub`, case preserved, a bare handle accepted, an address with no local part refused) and the config reader (defaults, a trailing slash and a missing leading one normalized, three malformed values each refused with the field named); the identity CHAIN — the caller's Cookie forwarded to the session route, **the address the LOGIN PLUGIN named** being the one used, and the token check running BEFORE the search; the exact question (`packageType=SKILL` and `label=FDE`, in that order, and **no other parameter** — no limit, no assetOwnership, no q); the mapping (displayName as the title with the slug as its fallback, the summary allowed to be empty, an unknown ownership reading as the quieter PUBLIC, a non-object element still yielding a card, the server's TOTAL travelling while its limit does not); the four refusals of the identity chain (no cookie, an empty cookie, an unauthenticated session, a session with no email — the last two proven to reach no SkillHub hop at all); the token check's refusals (a 401 and a non-zero envelope code both unauthorized, both naming the token the reader must provision, and NEITHER followed by a search; a whoami without an email still yielding a labelled list); the search's refusals (401, a 5xx, a non-zero envelope code carrying the service's own words, a success with no `data`, a body with no `code`, and a body that is not JSON); a REFUSED SOCKET as `unreachable` with the transport cause surviving rather than `fetch failed`; and the route itself — one exact path, a non-GET refused with 405 and `Allow`, every domain failure answered as HTTP 200 content with `ok: false`, and no caching |
 | `pnpm harness:skills-install` | the marketplace's WRITE path, over two local fake hosts (SkillHub and the pre-signed package host) and a scratch skill home: the token riding ONE hop — the hub sees `Bearer li.yh9-skillhub`, **the package host sees no `Authorization` at all** (the live service answers 400 when it does) — and the download's refusals (a 401, a 5xx, a 200 with no redirect, a redirect with no location, a redirect that is not a URL, one that leaves http(s), an expired signature, a body that is not a ZIP, a `content-length` claim past the cap, and a body that ARRIVES past it). The archive's refusal list is asserted with archives the harness BUILDS: `../escape`, a nested escape, an absolute path, a drive letter, a backslash, a control character, a symlink entry, a fifo, an unsupported method, a header that lies about its size, a decompression bomb, too many entries, a Zip64 archive, a truncated one — each refused AND (the half that matters) nothing written, with the extractor's own containment guard probed independently. The write's rules: the name comes from the package's own `SKILL.md` not from the marketplace's display name, a loader-invalid name is refused rather than installed, a second install is `already-installed` **without a second download**, a root that does not exist yet is created (the bug the real download found), a run that fails after claiming the directory removes it, and the provenance record is written. The `SKILL.md` subset parser and the name rules are asserted directly (folded scalars, quotes, CRLF, a BOM, a malformed block ending the read). The scan: the personal/shared split, the loader's RANK order, a shadowed name listed once, `.system` skipped, a flat `.md` skill, a symlinked directory followed, unusable frontmatter ignored, absent roots reported as absent, and no project narrowing rather than failing. And the three routes: exact paths, a GET refused on the write with `Allow`, a POST refused on the reads, a body missing a field answered 400, an install without a session refused as content, and the scan answering WITHOUT one (it reads directories, not SkillHub) |
 | `pnpm harness:lark-panel` | the panel itself, driven by clicks in jsdom over mocked routes: nothing read when no project is selected, one listing per folder opened and none twice, the project's folder name as the link it opens in Feishu, documents opening in Feishu — and, with a web-sidebar capability supplied, the same clicks routing INTO the sidebar with no tab beside them, plus the fallback to a tab when the capability answers false, "load more" asking for the page token the host offered, the MISSING state's create round trip (POST then re-resolve) and its pasted-link round trip, the AMBIGUOUS state offering each candidate and recording the chosen one, a shortcut that points back up its own branch rendering as a row that opens rather than a stack overflow, and a `scope-missing` refusal rendered with the scope to ask for |
-| `pnpm harness:account-dock` | the bottom-left corner, driven by clicks in jsdom: the SEAT PROTOCOL (what owner share `sidebar.account` is handed, that the fallback identity renders when no occupant answers it, that the sign-out row comes from `sidebar.account.menu`, and that Settings is asked for the WIDE trigger rather than the rail circle), the drawer's six rows **in order**, the Usage disclosure opening and closing, the one row still to build (present, named, tooltipped, carrying an icon, announcing no dialog and no disclosure, and clicking it opening nothing and closing nothing), dismissal by a second click / Escape / a pointerdown outside, the rail expanding the column instead of opening a drawer it could not fit, the **Skills modal** (that the row announces a dialog and no longer promises an unbuilt surface; the title and intro; that opening it reads nothing from the INVENTORY the plugins modal reads; the installed heading and its whole-set count; both scope tabs in order, their selected state and the pane's role/labelling; each empty sentence in its own words, and the state a reader sees WHILE the scan is in flight; that the marketplace is a SECTION with its own count, divider and identity line rather than a third tab; that the installed block is a READ — the personal tab listing what the marketplace wrote with its version as the label, the shared tab listing the other roots with the root each came from, the scanned directories printed, and a FAILED scan taking its own block down while the marketplace keeps rendering; Escape closing it and leaving the drawer open; and, rendered from a fixture, that the installed block lists each scope alone, that a card carries its description, that a refreshed list leaves the reader on the tab they chose, and that a changed installed list leaves the marketplace alone), the **marketplace read** (one read per open, and a re-open re-reading; the loading note and the absence of a count while nothing has answered; the heading counting the server's TOTAL rather than the returned slice; `displayName` as the title; the body chosen from the package, then from a `summary` that says something new, and never from a `summary` that repeats the title — the case the real catalogue is entirely made of, and one the earlier fixtures never rendered because they always gave the two fields different text; the identity line every card carries; no body line for an empty summary; a 个人 tag on a PRIVATE asset and on nothing else; a sentence of its own for each of the SEVEN failure codes; a failed read leaving no stale cards, no count, and the section above it untouched; the retry being a real re-read; and a fixture proving the marketplace lists what the HOST answered rather than the uninstalled skills this deployment knows about), the **install action** (every card carrying an action row; an already-installed asset showing 已安装 with NOTHING to press rather than a disabled button; an installable one offering 安装 with an accessible name; the busy state replacing the button while the host works; a successful install re-reading the installed list — the scan, not a local flag — because the disk is the authority; a refused install explained IN its own card with a retry; the `already-installed` answer rendered as a state with its own sentence; and an install that failed changing nothing), the **search box** (one control above both sections, capped at the route's own limit; the installed list filtering on the KEYSTROKE with no request, matching a DESCRIPTION as well as a name, on whichever tab is showing, with the count following it; a term matching nothing saying 没有匹配的技能 rather than claiming the machine is empty; the marketplace NOT asked on the keystroke but asked exactly once after the debounce, with the term; clearing restoring both halves and asking with no term; a slow answer for an older term NOT replacing a newer one that answered first; and a failed search leaving the installed filter answering), and the client's own transport arms driven through the REAL api with a stubbed `fetch` (the SPA's HTML for a route the host does not know reported as `host-unmounted` **with a sentence that does not mention the VPN** and does name the restart, a rejected `fetch` under the same code, a domain failure's code and sentence passing through untouched, a real-shaped answer mapped field by field, the three unreadable arms, and the dialog rendering what the real api read), the **Plugins modal** (the short-name rules; the catalogue heading, search row and count; one card per entry in host order; the phase dots; the 已启用/已停用 tags; the accessible name carrying the phase in words; the detail disclosure showing entry id + configuration + Cordis state, and only the first two for an entry with no live Fiber; the filter matching the module AND the entry id; a refusal carrying the host's own words with a retry that re-reads; an empty inventory saying so; a re-open re-reading the host; Escape closing the modal and leaving the drawer open; and a pointerdown in the page not closing the drawer while a modal is up), and — asserted without any DOM — the token arithmetic behind the Usage block: `formatTokens` at all four magnitudes, the billed-input sum of the three disjoint buckets, the cache-hit percentage and its `null` when nothing was billed, and occupancy preferring `projectedTokens` over the bare sample, falling back to it, and clamping at 100% |
+| `pnpm harness:account-dock` | the bottom-left corner, driven by clicks in jsdom: the SEAT PROTOCOL (what owner share `sidebar.account` is handed, that the fallback identity renders when no occupant answers it, that the sign-out row comes from `sidebar.account.menu`, and that Settings is asked for the WIDE trigger rather than the rail circle), the drawer's five rows **in order** (插件 is not offered, at the operator's request), the Usage disclosure opening and closing, the one row still to build (present, named, tooltipped, carrying an icon, announcing no dialog and no disclosure, and clicking it opening nothing and closing nothing), dismissal by a second click / Escape / a pointerdown outside, the rail expanding the column instead of opening a drawer it could not fit, the **Skills modal** (that the row announces a dialog and no longer promises an unbuilt surface; the title and intro; that opening it reads nothing from the INVENTORY the plugins modal reads; the installed heading and its whole-set count; both scope tabs in order, their selected state and the pane's role/labelling; each empty sentence in its own words, and the state a reader sees WHILE the scan is in flight; that the marketplace is a SECTION with its own count, divider and identity line rather than a third tab; that the installed block is a READ — the personal tab listing what the marketplace wrote with its version as the label, the shared tab listing the other roots with the root each came from, the scanned directories printed, and a FAILED scan taking its own block down while the marketplace keeps rendering; Escape closing it and leaving the drawer open; and, rendered from a fixture, that the installed block lists each scope alone, that a card carries its description, that a refreshed list leaves the reader on the tab they chose, and that a changed installed list leaves the marketplace alone), the **marketplace read** (one read per open, and a re-open re-reading; the loading note and the absence of a count while nothing has answered; the heading counting the server's TOTAL rather than the returned slice; `displayName` as the title; the body chosen from the package, then from a `summary` that says something new, and never from a `summary` that repeats the title — the case the real catalogue is entirely made of, and one the earlier fixtures never rendered because they always gave the two fields different text; the identity line every card carries; no body line for an empty summary; a 个人 tag on a PRIVATE asset and on nothing else; a sentence of its own for each of the SEVEN failure codes; a failed read leaving no stale cards, no count, and the section above it untouched; the retry being a real re-read; and a fixture proving the marketplace lists what the HOST answered rather than the uninstalled skills this deployment knows about), the **install action** (every card carrying an action row; an already-installed asset showing 已安装 with NOTHING to press rather than a disabled button; an installable one offering 安装 with an accessible name; the busy state replacing the button while the host works; a successful install re-reading the installed list — the scan, not a local flag — because the disk is the authority; a refused install explained IN its own card with a retry; the `already-installed` answer rendered as a state with its own sentence; and an install that failed changing nothing), the **search box** (one control above both sections, capped at the route's own limit; the installed list filtering on the KEYSTROKE with no request, matching a DESCRIPTION as well as a name, on whichever tab is showing, with the count following it; a term matching nothing saying 没有匹配的技能 rather than claiming the machine is empty; the marketplace NOT asked on the keystroke but asked exactly once after the debounce, with the term; clearing restoring both halves and asking with no term; a slow answer for an older term NOT replacing a newer one that answered first; and a failed search leaving the installed filter answering), and the client's own transport arms driven through the REAL api with a stubbed `fetch` (the SPA's HTML for a route the host does not know reported as `host-unmounted` **with a sentence that does not mention the VPN** and does name the restart, a rejected `fetch` under the same code, a domain failure's code and sentence passing through untouched, a real-shaped answer mapped field by field, the three unreadable arms, and the dialog rendering what the real api read), the **Plugins modal**, mounted directly because the drawer no longer offers its row — the surface is kept shipped and this is what keeps it verified (the short-name rules; the catalogue heading, search row and count; one card per entry in host order; the phase dots; the 已启用/已停用 tags; the accessible name carrying the phase in words; the detail disclosure showing entry id + configuration + Cordis state, and only the first two for an entry with no live Fiber; the filter matching the module AND the entry id; a refusal carrying the host's own words with a retry that re-reads; an empty inventory saying so; a re-open re-reading the host; Escape closing the modal and leaving the drawer open; and a pointerdown in the page not closing the drawer while a modal is up), and — asserted without any DOM — the token arithmetic behind the Usage block: `formatTokens` at all four magnitudes, the billed-input sum of the three disjoint buckets, the cache-hit percentage and its `null` when nothing was billed, and occupancy preferring `projectedTokens` over the bare sample, falling back to it, and clamping at 100% |
+| `pnpm harness:input-rail` | the conversation column's left edge, driven against a fake transcript in jsdom with every box stated (jsdom reports zeros, so the geometry is real input rather than luck): that only TYPED inputs become anchors — `user` and `steering` become ticks and injected `context` never does, in DOM order; that the anchors are one uniform-gap STACK centred in the rail — the correction to a content-offset mapping that spread a handful of anchors over several hundred pixels on a real long conversation — narrowing the stack as the rail fills, never below the floor, and overflowing symmetrically (still centred) rather than piling up at one end once it cannot shrink further, with a lone anchor in the middle and no anchors meaning no ticks; that the current marker follows the reader's MIDLINE rather than the scrollport's top edge, falls to the first anchor when the reader is above it, and goes to -1 only when there are no anchors; that hovering a tick shows THAT input alone — one tip, in its own words, hanging beside the tick it belongs to (its top at that tick's centre) and to the RIGHT of the rail rather than over it — that leaving the tick hides it, that the other tick answers for itself, and that hovering the empty strip shows nothing; that a click writes `scrollTop` so the input lands exactly at the jump inset — the arithmetic `ChatView` restores a reader position with — and pins that anchor as current at once instead of letting a closely spaced neighbour light up; that scrolling by hand hands the marker back to the midline rule; that the older-history chevron appears only while `hasMore` is set, loads exactly one page through the session's own `loadOlder`, and is disabled — loading nothing — while a page is in flight; and that the rail is drawn from ONE typed input onwards (a long turn's single prompt still gets its tick) and STAYS when the loaded window holds no typed input at all but more history remains — the state a long agent turn reaches, where the chevron is the only way back — while a window with nothing typed and nothing left to load, no session, or no transcript draws none |
 
 `harness:folder-route` drives the real `registerLarkRoutes` against a fake
 webserver that hands back the handler, with a stubbed `lark-cli` on disk; the
@@ -1699,7 +1795,7 @@ The account corner was additionally verified against the **live** GUI, with a
 session minted by `dsh-feishu-login`'s own signer (`playwright` + a synthetic
 cookie, so no phone): the top-right corner renders no account chip any more, the
 row lands at the column's bottom-left with the occupant's avatar and name, the
-drawer opens upward with 使用情况 / 插件 / 设置 / 退出登录, the shipped trigger opens the
+drawer opens upward with 使用情况 / 技能 / 产品卡 / 设置 / 退出登录, the shipped trigger opens the
 real settings modal from inside it, the sign-out row POSTs
 `/feishu-auth/logout` and lands on `/login`, Escape and an outside click both
 close the drawer, the rail expands on activation, and — on a session with real

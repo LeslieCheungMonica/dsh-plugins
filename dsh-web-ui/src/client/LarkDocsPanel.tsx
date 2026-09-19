@@ -384,7 +384,12 @@ export function LarkDocsPanel({ t, project, openInSidebar }: LarkDocsPanelProps)
    */
   const loginButton = (failure: LarkError | null): ReactNode => {
     if (failure === null) return null
-    if (failure.code !== 'scope-missing' && failure.code !== 'not-logged-in') return null
+    // Three failures share one fix — the operator has to authorize, and pressing
+    // Retry re-asks a question already refused: the login lacks a scope, nobody
+    // signed the CLI in at all, or SOMEBODY ELSE did (the CLI holds one account
+    // per host, so the way to read your own drive is to sign it in as yourself).
+    if (failure.code !== 'scope-missing' && failure.code !== 'not-logged-in'
+      && failure.code !== 'identity-mismatch') return null
     const scopes = failure.missingScopes ?? []
     return (
       <button
@@ -595,6 +600,14 @@ export function LarkDocsPanel({ t, project, openInSidebar }: LarkDocsPanelProps)
         {path !== '' && status === 'error' && error !== null && (
           <div data-wui="larkError" role="status">
             <span data-wui="larkErrorText">{error.message}</span>
+            {identity?.mismatch === true && (
+              <span data-wui="larkIdentityMismatch">
+                {t('lark.identity.mismatch', {
+                  viewer: identity.viewer?.name ?? identity.viewer?.openId ?? t('lark.unknownUser'),
+                  docs: identity.user?.name ?? identity.user?.openId ?? t('lark.unknownUser'),
+                })}
+              </span>
+            )}
             {errorHint !== null && <span data-wui="larkErrorHint">{errorHint}</span>}
             {loginButton(error)}
             <button type="button" data-wui="larkNoteAction" onClick={() => { void connect(true) }}>

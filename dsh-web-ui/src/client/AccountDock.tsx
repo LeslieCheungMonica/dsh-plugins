@@ -43,7 +43,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import {
   IconChevronUpOutline14, IconDataOutline16, IconPersonalizationOutline16,
-  IconSkillOutline16, IconUserOutline16, Tooltip, useDismissOnOutsidePointer,
+  IconSkillOutline16, IconUserOutline16, Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ShellProps } from './contract.ts'
 import { PluginsDialog } from './PluginsDialog.tsx'
@@ -89,6 +89,22 @@ export type AccountDockProps =
  * rather than nothing at all: a nameless row would read as a broken control.
  */
 const FALLBACK_BRAND = 'ForgeX'
+
+/**
+ * Whether the drawer offers the 插件 row, at the operator's request.
+ *
+ * The row is hidden, NOT the surface: `PluginsDialog`, the `listPlugins` face and
+ * the host's inventory read are all kept whole and still type-checked, so
+ * restoring the row is this one value — the same arrangement the bottom command
+ * bar uses (shipped, described, currently off). The row used to be the only way
+ * in; with it hidden, `pluginsOpen` can never become true, which is why the
+ * dialog below stays wired to it rather than being deleted: flipping this flag
+ * brings the whole path back with no other edit.
+ *
+ * A reader who wants the loaded-plugin list still has Settings → Plugins, which
+ * is the surface this modal reproduces — the reason hiding it here costs nothing.
+ */
+const OFFER_PLUGINS_ROW = false
 
 /**
  * What the not-yet-built 产品卡 row does when clicked: nothing.
@@ -140,14 +156,32 @@ export function AccountDock(props: AccountDockProps): ReactNode {
   const rootRef = useRef<HTMLDivElement | null>(null)
 
   // A pointerdown anywhere else closes the drawer — the same rule every other
-  // trigger-owned popover in this composition follows. Suspended while EITHER
-  // modal is up: those modals portal to the page body, so every click in one is
-  // "outside" this root, and letting it close the drawer would mean closing a
-  // modal also drops the reader out of the corner they opened it from.
-  useDismissOnOutsidePointer(rootRef, open && wide && !pluginsOpen && !skillsOpen, setOpen)
+  // trigger-owned popover in this composition follows — EXCEPT while a modal is
+  // up. All three surfaces that can sit above this drawer portal to the page body
+  // (this plugin's Plugins and Skills modals, and the shipped Settings panel the
+  // Settings row opens), so every click inside one is "outside" this root: letting
+  // it close the drawer would mean dismissing a modal also drops the reader out of
+  // the corner they opened it from.
+  //
+  // The rule reads the PAGE rather than a list of this plugin's own flags, which
+  // is also why it is written here instead of through `useDismissOnOutsidePointer`:
+  // that primitive takes a boolean decided at render time, while "is a modal up?"
+  // is a fact about the page at the moment of the gesture — and one of the three
+  // modals belongs to another plugin.
+  useEffect(() => {
+    if (!open || !wide) return
+    const onPointerDown = (event: PointerEvent): void => {
+      if (document.querySelector('[role="dialog"]') !== null) return
+      if (event.target instanceof Node && rootRef.current?.contains(event.target)) return
+      setOpen(false)
+    }
+    document.addEventListener('pointerdown', onPointerDown)
+    return () => { document.removeEventListener('pointerdown', onPointerDown) }
+  }, [open, wide])
 
   useEffect(() => {
-    // One gesture dismisses ONE surface. Three surfaces can sit above this drawer
+    // One gesture dismisses ONE surface, on the same page-level rule the
+    // pointerdown handler above follows. Three surfaces can sit above this drawer
     // — this plugin's own Plugins and Skills modals, and the shipped settings
     // panel that the Settings row opens — and all of them listen for Escape on the
     // document. Those listeners were registered after this one, so this handler
@@ -195,10 +229,10 @@ export function AccountDock(props: AccountDockProps): ReactNode {
           every toggle would reset the settings shell's own state. styles.ts owns
           the closed/open presentation. */}
       <div data-wui="accountDrawer" data-open={drawn || undefined} role="group" aria-label={t('account.menu')}>
-        {/* Both disclosures are the same shape on purpose: a row that expands in
-            place, above the divider, so the two ACTION rows below never move.
-            Usage first because it is about the work in front of the reader; the
-            plugin inventory second, because it is about the deployment. */}
+        {/* A row that expands in place, above the divider, so the ACTION rows
+            below never move. Usage is about the work in front of the reader;
+            the plugin inventory's row sits below it while OFFER_PLUGINS_ROW is
+            set — it is about the deployment. */}
         <button
           type="button"
           data-wui="drawerRow"
@@ -217,18 +251,20 @@ export function AccountDock(props: AccountDockProps): ReactNode {
           </div>
         )}
 
-        <button
-          type="button"
-          data-wui="drawerRow"
-          aria-haspopup="dialog"
-          aria-expanded={pluginsOpen}
-          onClick={() => { setPluginsOpen(true) }}
-        >
-          <span data-wui="drawerRowIcon" aria-hidden="true">
-            <IconPersonalizationOutline16 size={16} />
-          </span>
-          <span data-wui="drawerRowLabel">{t('plugin.title')}</span>
-        </button>
+        {OFFER_PLUGINS_ROW && (
+          <button
+            type="button"
+            data-wui="drawerRow"
+            aria-haspopup="dialog"
+            aria-expanded={pluginsOpen}
+            onClick={() => { setPluginsOpen(true) }}
+          >
+            <span data-wui="drawerRowIcon" aria-hidden="true">
+              <IconPersonalizationOutline16 size={16} />
+            </span>
+            <span data-wui="drawerRowLabel">{t('plugin.title')}</span>
+          </button>
+        )}
 
         {/* The Skills modal's trigger. It was the placeholder that stood here
             while the surface did not exist; the row, its icon and its label are

@@ -39,6 +39,7 @@ import { StageTag } from './StageTag.tsx'
 import { NO_PROJECT_SCOPE } from './stage.ts'
 import { useProjectFlow } from './projectFlow.ts'
 import { useProjectScope } from './project.ts'
+import { pickProject } from './projectPick.ts'
 
 /** Wide-content unmount delay; matches the 150ms wide-content fade-out. */
 const COLLAPSE_SETTLE_MS = 150
@@ -223,7 +224,14 @@ export function Shell(props: ShellProps): ReactNode {
         currentId={currentId}
         rail={rail}
         busy={flow.busy}
-        onSelect={(workspaceId) => { selectProject(workspaceId) }}
+        onSelect={(workspaceId) => {
+          // A pick both scopes the column and moves it: the list switches at
+          // once, and a pick that CHANGES the project opens that project's
+          // session, so the conversation beside the list is the one the list is
+          // about (see projectPick.ts — including why the mint does not live in
+          // the selection writer this column also hands the scope).
+          pickProject(workspaceId, currentId, { select: selectProject, startSession })
+        }}
         onEditProject={() => {
           if (selected !== undefined) {
             flow.editProject({ workspaceId: selected.workspaceId, path: selected.path, title: selected.title })

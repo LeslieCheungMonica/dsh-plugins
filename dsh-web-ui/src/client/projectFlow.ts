@@ -232,6 +232,8 @@ export function feishuFailureHint(error: LarkError, t: T): string | null {
       return t('feishu.hint.forbidden')
     case 'not-logged-in':
       return t('feishu.hint.login')
+    case 'identity-mismatch':
+      return t('feishu.hint.identity')
     case 'cli-missing':
       return t('feishu.hint.missing')
     case 'cli-network':

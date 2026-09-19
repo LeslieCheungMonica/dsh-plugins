@@ -55,12 +55,20 @@ const cards = handlers.get('/dsh-web-ui/lark/cards')
 const stage = handlers.get('/dsh-web-ui/lark/project/stage')
 const STAGE_PATH = '/dsh-web-ui/lark/project/stage'
 
-/** One synthetic request. */
+/**
+ * One synthetic request.
+ *
+ * `headers` is empty rather than absent: a real `IncomingMessage` always carries
+ * one, and the identity rule reads the `Cookie` header off every gated route
+ * (see `lark-identity.mjs`). A double with no `headers` at all reports that as a
+ * crash instead of as the anonymous session it actually is.
+ */
 function request({ method = 'GET', url = '/dsh-web-ui/lark/project', body = undefined } = {}) {
   const chunks = body === undefined ? [] : [Buffer.from(body)]
   return {
     method,
     url,
+    headers: {},
     async *[Symbol.asyncIterator]() { for (const chunk of chunks) yield chunk },
   }
 }

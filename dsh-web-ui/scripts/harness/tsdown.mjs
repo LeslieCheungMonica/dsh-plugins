@@ -3,8 +3,9 @@
  * dock, and the skill marketplace's host half for the offline harnesses
  * (`folder-flow.mjs`, `new-project-form.mjs` through `form-entry.tsx`,
  * `lark-panel.mjs` through `panel-entry.tsx`, `account-dock.mjs` through
- * `account-entry.tsx`, `sidebar-link.mjs` through `sidebar-link-entry.ts`, and
- * `skills-route.mjs` through `skills-entry.ts`).
+ * `account-entry.tsx`, `sidebar-link.mjs` through `sidebar-link-entry.ts`,
+ * `project-pick.mjs` through `project-pick-entry.ts`, and `skills-route.mjs`
+ * through `skills-entry.ts`).
  *
  * The harnesses verify the flow and the panel through the code the shipped client
  * bundle actually contains, so they are bundled from source rather than
@@ -55,6 +56,8 @@ await build({
     'account-dock': new URL('./account-entry.tsx', here).pathname,
     'stage-tag': new URL('./stage-entry.tsx', here).pathname,
     'sidebar-link': new URL('./sidebar-link-entry.ts', here).pathname,
+    'project-pick': new URL('./project-pick-entry.ts', here).pathname,
+    'input-rail': new URL('./input-rail-entry.tsx', here).pathname,
     'skills-route': new URL('./skills-entry.ts', here).pathname,
     'skills-install': new URL('./skills-entry.ts', here).pathname,
   },

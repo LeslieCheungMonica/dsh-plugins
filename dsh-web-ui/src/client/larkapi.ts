@@ -82,6 +82,23 @@ export interface LarkState {
   readonly loggedIn: boolean
   /** The signed-in user; null when nobody is signed in. */
   readonly user: LarkUser | null
+  /**
+   * The person THIS BROWSER is signed in as, according to the login plugin.
+   *
+   * A different question from {@link user}, and the panel needs both: `user` is
+   * the account whose Drive the host reads (the one `lark-cli` is bound to),
+   * while `viewer` is whoever the operator logged in as. Null when nobody is
+   * signed in, and when no login gate is mounted at all.
+   */
+  readonly viewer: LarkUser | null
+  /**
+   * True when the browser's session names a different person than {@link user}.
+   *
+   * Driven by the host, never guessed here: `open_id` is only comparable when
+   * both sides come from the same Feishu application, which is a fact about the
+   * deployment rather than about this response.
+   */
+  readonly mismatch: boolean
 }
 
 /** One Feishu folder. */
@@ -346,6 +363,8 @@ export function readLarkState(refresh = false): Promise<LarkResult<LarkState>> {
   return read(`/state${refresh ? '?refresh=1' : ''}`, (body) => ({
     loggedIn: body['loggedIn'] === true,
     user: toUser(body['user']),
+    viewer: toUser(body['viewer']),
+    mismatch: body['mismatch'] === true,
   }))
 }
 

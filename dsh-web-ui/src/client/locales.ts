@@ -467,6 +467,7 @@ export const zh = {
   'git.copySha': '复制提交号',
   'lark.title': '飞书文档',
   'lark.unknownUser': '飞书用户',
+  'lark.identity.mismatch': '当前登录：{viewer}；文档账号：{docs}',
   'lark.count': '{n} 项',
   'lark.refresh': '刷新飞书文档',
   'lark.loading': '正在读取…',
@@ -508,8 +509,17 @@ export const zh = {
   'feishu.hint.scope': 'lark-cli 登录缺少权限，执行 `lark-cli auth login --scope "{scope}"` 后重试。',
   'feishu.hint.forbidden': '当前飞书账号没有该目录的读取权限，请在飞书中申请权限后重试。',
   'feishu.hint.login': '在终端执行 `lark-cli auth login` 完成飞书登录后重试。',
+  'feishu.hint.identity': '扫码登录的账号和飞书文档用的不是同一个人，文档面板读的是另一个账号的云盘。'
+    + '用下面的“登录飞书文档”把它登成你自己，就能读自己的云盘。',
   'feishu.hint.network': '宿主到飞书的网络不通（TLS/代理/VPN），恢复网络后重试。',
   'feishu.hint.missing': '宿主未安装 lark-cli，无法创建飞书目录。',
+  // The input-anchor rail (see rail.ts and InputRail.tsx). The item label names
+  // the POSITION and quotes the input itself: a preview row that only said "第 3
+  // 条" would make the reader count rows to find their own words.
+  'rail.aria': '用户输入锚点',
+  'rail.item.label': '第 {n} 条输入：{text}',
+  'rail.older': '加载更早的输入',
+  'rail.olderBusy': '正在加载更早的输入…',
 } as const
 
 /** Every dictionary key of this namespace. */
@@ -924,6 +934,7 @@ export const en = {
   'git.copySha': 'Copy the commit id',
   'lark.title': 'Feishu docs',
   'lark.unknownUser': 'Feishu user',
+  'lark.identity.mismatch': 'Signed in as {viewer} \u00b7 docs account {docs}',
   'lark.count': '{n} items',
   'lark.refresh': 'Refresh Feishu docs',
   'lark.loading': 'Reading…',
@@ -965,6 +976,14 @@ export const en = {
   'feishu.hint.scope': 'The lark-cli login lacks a scope; run `lark-cli auth login --scope "{scope}"` and retry.',
   'feishu.hint.forbidden': 'This Feishu account cannot read that folder; request access in Feishu and retry.',
   'feishu.hint.login': 'Run `lark-cli auth login` in a terminal, then retry.',
+  'feishu.hint.identity': 'The account you signed in with is not the account the docs panel reads, so it is '
+    + 'reading somebody else\u2019s drive. Use \u201cSign in to Feishu docs\u201d below to make it yours.',
   'feishu.hint.network': 'The host cannot reach Feishu (TLS/proxy/VPN). Restore the network and retry.',
   'feishu.hint.missing': '`lark-cli` is not installed on the host, so no Feishu folder can be created.',
+  // The input-anchor rail — see the Chinese dictionary for why the label quotes
+  // the input instead of only numbering it.
+  'rail.aria': 'Your inputs in this conversation',
+  'rail.item.label': 'Input {n}: {text}',
+  'rail.older': 'Load earlier inputs',
+  'rail.olderBusy': 'Loading earlier inputs…',
 } satisfies Record<WebUiKey, string>

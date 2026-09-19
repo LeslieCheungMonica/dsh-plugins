@@ -26,7 +26,7 @@
  * an occupant registered at priority -1 — so the empty-state mark is this
  * deployment's too, wherever the hero is rendered.
  */
-import type { ClientContext, WorkspaceId } from '@deepseek-ai/dsh-client-runtime/client'
+import type { ClientContext, SessionId, WorkspaceId } from '@deepseek-ai/dsh-client-runtime/client'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
@@ -38,6 +38,9 @@ import { installMarketSkill, listInstalledSkills, searchMarketSkills } from './s
 import { Shell } from './Shell.tsx'
 import { NS, type ShellInjected } from './contract.ts'
 import { en, zh } from './locales.ts'
+import { InputRail } from './InputRail.tsx'
+import type { RailReader } from './InputRail.tsx'
+import type { SessionRail } from './rail.ts'
 import { createSelectionStore, type SelectionActions } from './project.ts'
 import { betterSidebarOpener, combineOpeners, webSidebarOpener, type OpenInSidebar } from './sidebarLink.ts'
 import { STYLES, STYLE_TAG_ID } from './styles.ts'
@@ -301,6 +304,58 @@ export function apply(ctx: ClientContext): void {
     } catch (error) {
       // The bar is chrome: without it the page is still a working page.
       console.warn('dsh-web-ui: could not register the action bar', error)
+      return () => {}
+    }
+  })
+
+  // The input-anchor rail: the frame's left edge of the conversation column, one
+  // tick per input the reader typed (see InputRail.tsx for the seat choice, and
+  // rail.ts for the arithmetic).
+  //
+  // It reaches the session through THIS face rather than through the framework's
+  // session kit, because `shell.overlay` is a root-scope seat: its standard kit
+  // carries the session LIST hook, not a per-session `useSession`. The face hands
+  // over exactly the paging facts the rail needs (`hasMore` / `loadingOlder` /
+  // `loadOlder`) and nothing else — a component that could reach the whole
+  // session snapshot would be one refactor away from writing to it.
+  //
+  // The view is MEMOIZED per session id, and that is a correctness requirement,
+  // not a cache: the component binds these closures to `useSyncExternalStore`,
+  // and a fresh object per render would resubscribe on every commit. Only the
+  // most recent session is retained, so a day of session hopping cannot grow a
+  // map of dead bindings.
+  let railSessionId: SessionId | undefined
+  let railSessionView: SessionRail | undefined
+  const rail: RailReader = {
+    sessionRail: (sessionId) => {
+      if (sessionId === undefined) return undefined
+      if (sessionId === railSessionId && railSessionView !== undefined) return railSessionView
+      const session = ctx.sessions.binding(sessionId)?.session
+      if (session === undefined) return undefined
+      const view: SessionRail = {
+        subscribe: listener => session.subscribe(listener),
+        hasMore: () => session.getSnapshot().hasMore,
+        loadingOlder: () => session.getSnapshot().loadingOlder,
+        loadOlder: () => { void session.loadOlder() },
+      }
+      railSessionId = sessionId
+      railSessionView = view
+      return view
+    },
+  }
+
+  ctx.slots.inject('shell.overlay', () => {
+    try {
+      return ctx.slots.register({
+        name: 'shell.overlay',
+        id: 'dsh-web-ui-input-rail',
+        locale: NS,
+        inject: () => ({ rail }),
+        registrant: 'dsh-web-ui',
+      }, InputRail)
+    } catch (error) {
+      // The rail is a navigation aid: a page without it is still a working page.
+      console.warn('dsh-web-ui: could not register the input rail', error)
       return () => {}
     }
   })

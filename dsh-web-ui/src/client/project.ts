@@ -5,8 +5,10 @@
  * A project IS a DSH workspace, and DSH has no host-side "active workspace", so
  * the selection is a client fact this plugin owns:
  *
- * - the dropdown writes it (picking a project scopes the list — it does NOT
- *   mint a session, unlike the shipped browser's picker);
+ * - the dropdown writes it (picking a project scopes the list; a pick that
+ *   MOVES the column also opens that project's session — the rule is
+ *   `projectPick.ts`, and it deliberately does NOT live in this store's writer,
+ *   which the follow-the-current-session effect below also calls);
  * - the session list reads it (it renders exactly that project's sessions);
  * - the New Session button targets it.
  *
